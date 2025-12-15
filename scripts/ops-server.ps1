@@ -99,6 +99,20 @@ while ($true) {
                 $out = & $script -Action replace-lines -Path $b.path -Offset ([int]$b.offset) -Count ([int]$b.count) -Content $b.content 2>&1
                 Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
             }
+            'replace-lines-checked' {
+                if ($method -ne 'POST') { throw 'Method not allowed' }
+                $b = Read-BodyJson $req
+                $script = Join-Path $PSScriptRoot 'ops.ps1'
+                $out = & $script -Action replace-lines-checked -Path $b.path -Offset ([int]$b.offset) -Count ([int]$b.count) -Expected $b.expected -Content $b.content 2>&1
+                Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
+            }
+            'insert-after' {
+                if ($method -ne 'POST') { throw 'Method not allowed' }
+                $b = Read-BodyJson $req
+                $script = Join-Path $PSScriptRoot 'ops.ps1'
+                $out = & $script -Action insert-after -Path $b.path -Anchor $b.anchor -Occurrence ([int]$b.occurrence) -Regex:$([bool]$b.regex) -Content $b.content 2>&1
+                Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
+            }
             'lint/js' {
                 $script = Join-Path $PSScriptRoot 'ops.ps1'
                 $out = & $script -Action lint-js 2>&1
