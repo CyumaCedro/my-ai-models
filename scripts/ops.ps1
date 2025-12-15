@@ -22,7 +22,9 @@ function Resolve-WorkspacePath {
     $root = (Get-Location).Path
     if ([string]::IsNullOrWhiteSpace($p)) { return $null }
     $full = [System.IO.Path]::GetFullPath((Join-Path $root $p))
-    if (-not $full.StartsWith($root, [System.StringComparison]::OrdinalIgnoreCase)) {
+    $isWin = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+    $cmp = if ($isWin) { [System.StringComparison]::OrdinalIgnoreCase } else { [System.StringComparison]::Ordinal }
+    if (-not $full.StartsWith($root, $cmp)) {
         throw "Path outside workspace: $full"
     }
     return $full

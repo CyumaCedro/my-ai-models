@@ -5,9 +5,20 @@ Param(
 Set-StrictMode -Version Latest
 $ErrorActionPreference = 'Stop'
 
-$prefix = "http://localhost:$Port/"
 $listener = New-Object System.Net.HttpListener
-$listener.Prefixes.Add($prefix)
+$listener.Prefixes.Clear()
+$isWin = [System.Runtime.InteropServices.RuntimeInformation]::IsOSPlatform([System.Runtime.InteropServices.OSPlatform]::Windows)
+if ($isWin) {
+    $p = "http://localhost:$Port/"
+    $listener.Prefixes.Add($p)
+}
+else {
+    $added = $false
+    foreach ($p in @("http://*:$Port/", "http://0.0.0.0:$Port/", "http://localhost:$Port/")) {
+        try { $listener.Prefixes.Add($p); $added = $true; break } catch { }
+    }
+    if (-not $added) { throw "Failed to bind any prefixes on port $Port" }
+}
 $listener.Start()
 
 function Read-BodyJson {
@@ -29,7 +40,6 @@ function Write-Json {
     $response.OutputStream.Close()
 }
 
-Remove-Item -ErrorAction SilentlyContinue -LiteralPath $null
 
 while ($true) {
     $ctx = $listener.GetContext()
