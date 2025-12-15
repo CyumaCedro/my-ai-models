@@ -1,6 +1,6 @@
 Param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('view','write','append','ls','mkdir','rm','mv','cp','stat','head','tail','read-range','find','checksum','index','lint-js','format-js','lint-py','format-py','insert-lines','replace-lines','git-init','git-status','git-add','git-commit','git-branch','git-log','git-push','git-set-user','git-remote-add','git-remote-set-url','git-remote-list','git-fetch','git-pull','git-diff','git-reset','git-checkout','git-tag','git-stash','git-show','git-clone','git-revert')]
+    [ValidateSet('view','write','append','ls','mkdir','rm','mv','cp','stat','head','tail','read-range','find','checksum','index','lint-js','format-js','lint-py','format-py','insert-lines','replace-lines','replace-lines-checked','insert-after','git-init','git-status','git-add','git-commit','git-branch','git-log','git-push','git-set-user','git-remote-add','git-remote-set-url','git-remote-list','git-fetch','git-pull','git-diff','git-reset','git-checkout','git-tag','git-stash','git-show','git-clone','git-revert','exec')]
     [string]$Action,
 
     [string]$Path,
@@ -26,7 +26,14 @@ Param(
     [string]$Op,
     [string]$Exclude,
     [switch]$NoCommit,
-    [int]$Count=0
+    [int]$Count=0,
+    [string]$Expected,
+    [string]$Anchor,
+    [int]$Occurrence=1,
+    [switch]$Regex,
+    [string]$Cmd,
+    [string]$Cwd,
+    [int]$Timeout=60
 )
 
 Set-StrictMode -Version Latest
@@ -210,7 +217,7 @@ switch ($Action) {
         if (-not $Path) { throw 'Path required' }
         $full = Resolve-WorkspacePath $Path
         $arr = @()
-        if (Test-Path -LiteralPath $full) { $arr = Get-Content -LiteralPath $full -Encoding UTF8 } else { $arr = @() }
+        if (Test-Path -LiteralPath $full) { $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw; $arr = if ($raw) { $raw -split "`r?`n" } else { @() } } else { $arr = @() }
         $ins = if ($Content) { $Content -split "`r?`n" } else { @('') }
         $preCount = [Math]::Max(0, $Offset - 1)
         $pre = if ($arr.Length -gt 0 -and $preCount -gt 0) { $arr[0..($preCount-1)] } else { @() }
@@ -223,7 +230,8 @@ switch ($Action) {
         if (-not $Path) { throw 'Path required' }
         $full = Resolve-WorkspacePath $Path
         if (-not (Test-Path -LiteralPath $full)) { throw 'Not found' }
-        $arr = Get-Content -LiteralPath $full -Encoding UTF8
+        $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw
+        $arr = if ($raw) { $raw -split "`r?`n" } else { @() }
         $startIdx = [Math]::Max(0, $Offset - 1)
         $endIdx = [Math]::Min($arr.Length - 1, $startIdx + [Math]::Max(0,$Count) - 1)
         $ins = if ($Content) { $Content -split "`r?`n" } else { @() }
@@ -233,6 +241,72 @@ switch ($Action) {
         $new = $pre + $ins + $post
         Set-Content -LiteralPath $full -Value $new -Encoding UTF8
         Write-Output $full
+    }
+    'replace-lines-checked' {
+        if (-not $Path) { throw 'Path required' }
+        $full = Resolve-WorkspacePath $Path
+        if (-not (Test-Path -LiteralPath $full)) { throw 'Not found' }
+        $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw
+        $arr = if ($raw) { $raw -split "`r?`n" } else { @() }
+        $startIdx = [Math]::Max(0, $Offset - 1)
+        $endIdx = [Math]::Min($arr.Length - 1, $startIdx + [Math]::Max(0,$Count) - 1)
+        $cur = if ($endIdx -ge $startIdx) { $arr[$startIdx..$endIdx] } else { @() }
+        $exp = if ($Expected) { $Expected -split "`r?`n" } else { @() }
+        if ($cur.Length -ne $exp.Length) { throw 'mismatch' }
+        for ($i=0; $i -lt $cur.Length; $i++) { if ($cur[$i] -ne $exp[$i]) { throw 'mismatch' } }
+        $ins = if ($Content) { $Content -split "`r?`n" } else { @() }
+        $pre = if ($startIdx -gt 0) { $arr[0..($startIdx-1)] } else { @() }
+        $postStart = $endIdx + 1
+        $post = if ($postStart -le ($arr.Length - 1)) { $arr[$postStart..($arr.Length-1)] } else { @() }
+        $new = $pre + $ins + $post
+        Set-Content -LiteralPath $full -Value $new -Encoding UTF8
+        Write-Output $full
+    }
+    'insert-after' {
+        if (-not $Path) { throw 'Path required' }
+        if (-not $Anchor) { throw 'Anchor required' }
+        $full = Resolve-WorkspacePath $Path
+        if (-not (Test-Path -LiteralPath $full)) { throw 'Not found' }
+        $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw
+        $arr = if ($raw) { $raw -split "`r?`n" } else { @() }
+        $matchIdx = -1
+        $count = 0
+        for ($i=0; $i -lt $arr.Length; $i++) {
+            $line = $arr[$i]
+            $isMatch = $false
+            if ($Regex) { $isMatch = [regex]::IsMatch($line, $Anchor) }
+            else { $isMatch = $line.Contains($Anchor) }
+            if ($isMatch) { $count++; if ($count -eq $Occurrence) { $matchIdx = $i; break } }
+        }
+        if ($matchIdx -lt 0) { throw 'anchor not found' }
+        $ins = if ($Content) { $Content -split "`r?`n" } else { @('') }
+        $pre = if ($matchIdx -ge 0) { $arr[0..$matchIdx] } else { @() }
+        $postStart = $matchIdx + 1
+        $post = if ($postStart -le ($arr.Length - 1)) { $arr[$postStart..($arr.Length-1)] } else { @() }
+        $new = $pre + $ins + $post
+        Set-Content -LiteralPath $full -Value $new -Encoding UTF8
+        Write-Output $full
+    }
+    'exec' {
+        if (-not $Cmd) { throw 'Cmd required' }
+        $wd = if ($Cwd) { Resolve-WorkspacePath $Cwd } else { (Get-Location).Path }
+        $exeCmd = Get-Command pwsh -ErrorAction SilentlyContinue
+        $exe = if ($exeCmd) { 'pwsh' } else { 'powershell' }
+        $psi = New-Object System.Diagnostics.ProcessStartInfo
+        $psi.FileName = $exe
+        $psi.Arguments = "-NoLogo -NoProfile -Command $Cmd"
+        $psi.WorkingDirectory = $wd
+        $psi.UseShellExecute = $false
+        $psi.RedirectStandardOutput = $true
+        $psi.RedirectStandardError = $true
+        $p = [System.Diagnostics.Process]::Start($psi)
+        $ok = $p.WaitForExit($Timeout * 1000)
+        if (-not $ok) { $p.Kill(); throw 'timeout' }
+        $out = $p.StandardOutput.ReadToEnd()
+        $err = $p.StandardError.ReadToEnd()
+        Write-Output ("EXIT:{0}" -f $p.ExitCode)
+        Write-Output ("STDOUT<<`n{0}`n>>" -f $out)
+        Write-Output ("STDERR<<`n{0}`n>>" -f $err)
     }
     'git-init' {
         Git-Ensure
