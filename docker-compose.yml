@@ -9,19 +9,34 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     environment:
-      - OLLAMA_NUM_PARALLEL=1
+      # Parallel processing
+      - OLLAMA_NUM_PARALLEL=2
+      - OLLAMA_MAX_LOADED_MODELS=2
+      - OLLAMA_KEEP_ALIVE=5m
       - OLLAMA_ORIGINS=*
+      
+      # GPU memory management
+      - OLLAMA_MAX_VRAM=28000000000
+      - OLLAMA_GPU_OVERHEAD=2000000000
+      - OLLAMA_NUM_GPU=1
+      - OLLAMA_NUM_THREAD=8
+      
+      # TOKEN SETTINGS - adjust based on your needs
+      - OLLAMA_NUM_CTX=32768              # Default context window (8K tokens)
+      - OLLAMA_NUM_BATCH=1024            # Processing batch size
+      - OLLAMA_NUM_PREDICT=1024           # Default max output tokens
+      
     restart: unless-stopped
-    # Uncomment the following lines if you have an NVIDIA GPU
-    # deploy:
-    #   resources:
-    #     reservations:
-    #       devices:
-    #         - driver: nvidia
-    #           count: all
-    #           capabilities: [gpu]
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 8G
 
-  # Web UI for interacting with Ollama (optional)
   ollama-webui:
     image: ghcr.io/open-webui/open-webui:main
     container_name: ollama-webui
@@ -29,13 +44,17 @@ services:
       - "3000:8080"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
+      - WEBUI_AUTH=false
     volumes:
       - ollama_webui_data:/app/backend/data
     depends_on:
       - ollama
     restart: unless-stopped
+    deploy:
+      resources:
+        limits:
+          memory: 2G
 
-  # Init container to pull DeepSeek model
   ollama-init:
     image: ollama/ollama:latest
     container_name: ollama-init
@@ -49,7 +68,7 @@ services:
       echo 'Waiting for Ollama to start...';
       sleep 15;
       echo 'Pulling deepseek-coder-v2 model...';
-      ollama pull deepseek-coder-v2;
+      ollama pull deepseek-coder-v2:16b-lite-instruct-q4_K_M;
       echo 'Model pulled successfully!';
       "
     restart: "no"
