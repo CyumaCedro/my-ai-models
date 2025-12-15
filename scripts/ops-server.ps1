@@ -358,6 +358,21 @@ while ($true) {
                 $out = & $script -Action git-revert -Ref $b.ref -NoCommit:$([bool]$b.noCommit) 2>&1
                 Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
             }
+            'exec' {
+                if ($method -ne 'POST') { throw 'Method not allowed' }
+                $b = Read-BodyJson $req
+                $script = Join-Path $PSScriptRoot 'ops.ps1'
+                $out = & $script -Action exec -Cmd $b.command -Cwd $b.cwd -Timeout ([int]$b.timeoutSec) 2>&1
+                $text = ($out -join "`n")
+                $exit = 0
+                $mExit = [regex]::Match($text, 'EXIT:(-?\d+)')
+                if ($mExit.Success) { $exit = [int]$mExit.Groups[1].Value }
+                $mStdOut = [regex]::Match($text, 'STDOUT<<\n([\s\S]*?)\n>>')
+                $mStdErr = [regex]::Match($text, 'STDERR<<\n([\s\S]*?)\n>>')
+                $stdout = if ($mStdOut.Success) { $mStdOut.Groups[1].Value } else { '' }
+                $stderr = if ($mStdErr.Success) { $mStdErr.Groups[1].Value } else { '' }
+                Write-Json -response $res -obj @{ success = $true; exit = $exit; stdout = $stdout; stderr = $stderr }
+            }
             default {
                 $res.StatusCode = 404
                 Write-Json -response $res -obj @{ success = $false; error = 'not found' }
