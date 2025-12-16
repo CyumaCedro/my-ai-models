@@ -85,6 +85,15 @@ while ($true) {
                 $out = & $script -Action append -Path $b.path -Content $b.content -CreateDirs:$([bool]$b.createDirs) 2>&1
                 Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
             }
+            'apply-blocks' {
+                if ($method -ne 'POST') { throw 'Method not allowed' }
+                $b = Read-BodyJson $req
+                $script = Join-Path $PSScriptRoot 'ops.ps1'
+                $raw = if ($b.search_replace_blocks) { [System.Text.Encoding]::UTF8.GetBytes([string]$b.search_replace_blocks) } else { $null }
+                $b64 = if ($raw) { [System.Convert]::ToBase64String($raw) } else { $null }
+                $out = & $script -Action 'apply-blocks' -Path $b.path -BlocksBase64 $b64 -Mode $b.mode 2>&1
+                Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
+            }
             'insert-lines' {
                 if ($method -ne 'POST') { throw 'Method not allowed' }
                 $b = Read-BodyJson $req

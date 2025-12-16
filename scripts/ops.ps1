@@ -1,10 +1,12 @@
 Param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('view','write','append','ls','mkdir','rm','mv','cp','stat','head','tail','read-range','find','checksum','index','lint-js','format-js','lint-py','format-py','insert-lines','replace-lines','replace-lines-checked','insert-after','git-init','git-status','git-add','git-commit','git-branch','git-log','git-push','git-set-user','git-remote-add','git-remote-set-url','git-remote-list','git-fetch','git-pull','git-diff','git-reset','git-checkout','git-tag','git-stash','git-show','git-clone','git-revert','exec')]
+    [ValidateSet('view','write','append','ls','mkdir','rm','mv','cp','stat','head','tail','read-range','find','checksum','index','lint-js','format-js','lint-py','format-py','insert-lines','replace-lines','replace-lines-checked','insert-after','apply-blocks','git-init','git-status','git-add','git-commit','git-branch','git-log','git-push','git-set-user','git-remote-add','git-remote-set-url','git-remote-list','git-fetch','git-pull','git-diff','git-reset','git-checkout','git-tag','git-stash','git-show','git-clone','git-revert','exec')]
     [string]$Action,
 
     [string]$Path,
     [string]$Content,
+    [string]$Blocks,
+    [string]$BlocksBase64,
     [switch]$CreateDirs,
     [string]$Message,
     [string]$Name,
@@ -107,6 +109,46 @@ switch ($Action) {
         if (-not $Path) { throw 'Path required' }
         if ($null -eq $Content) { throw 'Content required' }
         Write-File -p $Path -c $Content -append -createDirs:$CreateDirs
+    }
+    'apply-blocks' {
+        if (-not $Path) { throw 'Path required' }
+        $src = $null
+        if ($BlocksBase64) {
+            $bytes = [System.Convert]::FromBase64String($BlocksBase64)
+            $src = [System.Text.Encoding]::UTF8.GetString($bytes)
+        } else {
+            if (-not $Blocks) { throw 'Blocks required' }
+            $src = $Blocks
+        }
+        $full = Resolve-WorkspacePath $Path
+        $pattern = '<<<<<<< ORIGINAL([\s\S]*?)=======([\s\S]*?)>>>>>>> UPDATED'
+        $matches = [regex]::Matches($src, $pattern)
+        if ($matches.Count -lt 1) { throw 'no blocks' }
+        $exists = Test-Path -LiteralPath $full
+        $raw = if ($exists) { [System.IO.File]::ReadAllText($full) } else { '' }
+        $norm = ($raw -replace '\r\n', "`n")
+        foreach ($m in $matches) {
+            $orig = $m.Groups[1].Value
+            $upd = $m.Groups[2].Value
+            $origNorm = ($orig -replace '^\r?\n','' -replace '\r?\n$','' -replace '\r\n', "`n")
+            $updNorm = ($upd -replace '^\r?\n','' -replace '\r?\n$','' -replace '\r\n', "`n")
+            if ($norm.Contains($origNorm)) {
+                $norm = $norm.Replace($origNorm, $updNorm)
+            } else {
+                if ($exists) {
+                    switch ($Mode) {
+                        'overwrite' { $norm = $updNorm }
+                        'append' { $norm = if ($norm) { $norm + "`n" + $updNorm } else { $updNorm } }
+                        default { throw 'original not found' }
+                    }
+                } else {
+                    $norm = $updNorm
+                }
+            }
+        }
+        $lines = [string[]]($norm -split "`n")
+        Invoke-Retry { Write-Lines -p $full -lines $lines }
+        Write-Output $full
     }
     'ls' {
         $base = if ($Path) { Resolve-WorkspacePath $Path } else { (Get-Location).Path }
