@@ -1,6 +1,6 @@
 Param(
     [Parameter(Mandatory=$true)]
-    [ValidateSet('view','write','append','ls','mkdir','rm','mv','cp','stat','head','tail','read-range','find','checksum','index','lint-js','format-js','lint-py','format-py','insert-lines','replace-lines','replace-lines-checked','insert-after','apply-blocks','git-init','git-status','git-add','git-commit','git-branch','git-log','git-push','git-set-user','git-remote-add','git-remote-set-url','git-remote-list','git-fetch','git-pull','git-diff','git-reset','git-checkout','git-tag','git-stash','git-show','git-clone','git-revert','exec')]
+    [ValidateSet('view','write','append','ls','mkdir','rm','mv','cp','stat','head','tail','read-range','find','checksum','index','lint-js','format-js','lint-py','format-py','insert-lines','replace-lines','replace-lines-checked','insert-after','apply-blocks','code-review','git-init','git-status','git-add','git-commit','git-branch','git-log','git-push','git-set-user','git-remote-add','git-remote-set-url','git-remote-list','git-fetch','git-pull','git-diff','git-reset','git-checkout','git-tag','git-stash','git-show','git-clone','git-revert','exec')]
     [string]$Action,
 
     [string]$Path,
@@ -35,7 +35,10 @@ Param(
     [switch]$Regex,
     [string]$Cmd,
     [string]$Cwd,
-    [int]$Timeout=60
+    [int]$Timeout=60,
+    [switch]$ApplyFixes,
+    [int]$MaxLen=120,
+    [string]$Exts
 )
 
 Set-StrictMode -Version Latest
@@ -149,6 +152,80 @@ switch ($Action) {
         $lines = [string[]]($norm -split "`n")
         Invoke-Retry { Write-Lines -p $full -lines $lines }
         Write-Output $full
+    }
+    'code-review' {
+        Write-Output 'STEP:A'
+        $base = if ($Path) { Resolve-WorkspacePath $Path } else { (Get-Location).Path }
+        Write-Output ('BASE:{0}' -f $base)
+        $all = Get-ChildItem -LiteralPath $base -Recurse -ErrorAction Stop | Where-Object { -not $_.PSIsContainer }
+        Write-Output ('COUNT_ALL:{0}' -f ($all.Length))
+        $allowed = if ($Exts) { $Exts -split ',' } else { @('.js','.jsx','.ts','.tsx','.py') }
+        Write-Output ('ALLOWED:{0}' -f (($allowed -join ',')))
+        $files = $all | Where-Object { $allowed -contains ([System.IO.Path]::GetExtension($_.Name).ToLower()) }
+        Write-Output ('COUNT_FILES:{0}' -f ($files.Length))
+        $results = @()
+        foreach ($f in $files) {
+            $full = $f.FullName
+            $ext = [System.IO.Path]::GetExtension($f.Name).ToLower()
+            $lang = if ($ext -eq '.py') { 'py' } else { 'js' }
+            $raw = ''
+            try { $raw = [System.IO.File]::ReadAllText($full) } catch { $raw = '' }
+            Write-Output ('FILE:{0} LANG:{1} RAW:{2}' -f $full,$lang,$raw.Length)
+            $norm = ($raw -replace '\r\n', "`n")
+            $fileLines = if ($norm) { $norm -split "`n" } else { @() }
+            Write-Output ('LINES:{0}' -f $fileLines.Length)
+            $issues = @()
+            if ($fileLines.Length -gt 0) {
+                for ($i=0; $i -lt $fileLines.Length; $i++) {
+                    $line = $fileLines[$i]
+                    if ($line -match '\s+$') { $issues += [pscustomobject]@{ type='whitespace_trailing'; line=$i+1 } }
+                    if ($line.Length -gt $MaxLen) { $issues += [pscustomobject]@{ type='line_too_long'; line=$i+1; length=$line.Length } }
+                    if ($line -match 'TODO|FIXME') { $issues += [pscustomobject]@{ type='todo_marker'; line=$i+1 } }
+                    if ($line -match '\beval\s*\(') { $issues += [pscustomobject]@{ type='eval_usage'; line=$i+1 } }
+                    if ($lang -eq 'js') {
+                        if ($line -match '^\s*var\s+') { $issues += [pscustomobject]@{ type='var_usage'; line=$i+1 } }
+                        if ($line -match '\bconsole\.log\s*\(') { $issues += [pscustomobject]@{ type='console_log'; line=$i+1 } }
+                    } else {
+                        if ($line -match '^\t') { $issues += [pscustomobject]@{ type='tab_indentation'; line=$i+1 } }
+                        if ($line -match '^\s*print\s*\(') { $issues += [pscustomobject]@{ type='print_usage'; line=$i+1 } }
+                    }
+                }
+            }
+            Write-Output ('ISSUES:{0}' -f $issues.Length)
+            $needsNewline = $false
+            if ($raw.Length -gt 0) { if ($raw -notmatch "(\r?\n)$") { $needsNewline = $true } }
+            if ($needsNewline) { $issues += [pscustomobject]@{ type='missing_eof_newline'; line=$fileLines.Length } }
+            $fixed = $false
+            if ($ApplyFixes) {
+                if ($fileLines.Length -gt 0) {
+                    for ($i=0; $i -lt $fileLines.Length; $i++) { $fileLines[$i] = ($fileLines[$i] -replace '\s+$','') }
+                }
+                $fixed = $true
+                $outLines = [string[]]$fileLines
+                if ($outLines.Length -eq 0) { $outLines = @('') }
+                Write-Lines -p $full -lines $outLines
+            }
+            Write-Output ('FIXED:{0}' -f $fixed)
+            $results += [pscustomobject]@{ path=$full; lang=$lang; issues=$issues; fixed=$fixed }
+        }
+        $tools = @()
+        $eslint = Get-Command eslint -ErrorAction SilentlyContinue
+        $npx = Get-Command npx -ErrorAction SilentlyContinue
+        if ($eslint) { $tools += [pscustomobject]@{ tool='eslint'; available=$true } }
+        elseif ($npx) { $tools += [pscustomobject]@{ tool='npx eslint'; available=$true } }
+        else { $tools += [pscustomobject]@{ tool='eslint'; available=$false } }
+        $ruff = Get-Command ruff -ErrorAction SilentlyContinue
+        if ($ruff) { $tools += [pscustomobject]@{ tool='ruff'; available=$true } }
+        else { $tools += [pscustomobject]@{ tool='ruff'; available=$false } }
+        $filesCount = (@($results)).Count
+        $jsCount = (@($results | Where-Object { $_.lang -eq 'js' })).Count
+        $pyCount = (@($results | Where-Object { $_.lang -eq 'py' })).Count
+        $output = [pscustomobject]@{
+            summary = [pscustomobject]@{ files=$filesCount; js=$jsCount; py=$pyCount; tools=$tools }
+            results = $results
+        }
+        $json = $output | ConvertTo-Json -Depth 6
+        Write-Output $json
     }
     'ls' {
         $base = if ($Path) { Resolve-WorkspacePath $Path } else { (Get-Location).Path }

@@ -94,6 +94,13 @@ while ($true) {
                 $out = & $script -Action 'apply-blocks' -Path $b.path -BlocksBase64 $b64 -Mode $b.mode 2>&1
                 Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
             }
+            'code-review' {
+                if ($method -ne 'POST') { throw 'Method not allowed' }
+                $b = Read-BodyJson $req
+                $script = Join-Path $PSScriptRoot 'ops.ps1'
+                $out = & $script -Action 'code-review' -Path $b.path -ApplyFixes:$([bool]$b.apply_fixes) -MaxLen $b.max_len -Exts $b.exts 2>&1
+                Write-Json -response $res -obj @{ success = $true; data = ($out -join "`n") }
+            }
             'insert-lines' {
                 if ($method -ne 'POST') { throw 'Method not allowed' }
                 $b = Read-BodyJson $req
