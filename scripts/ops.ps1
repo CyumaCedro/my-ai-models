@@ -52,6 +52,21 @@ function Resolve-WorkspacePath {
     return $full
 }
 
+function Invoke-Retry {
+    param([scriptblock]$sb, [int]$tries=5, [int]$delayMs=200)
+    for ($i=0; $i -lt $tries; $i++) {
+        try { & $sb; return } catch { if ($i -ge ($tries-1)) { throw } else { Start-Sleep -Milliseconds $delayMs } }
+    }
+}
+
+function Write-Lines {
+    param([string]$p, [string[]]$lines)
+    $sw = New-Object System.IO.StreamWriter($p, $false, [System.Text.Encoding]::UTF8, 4096)
+    try {
+        foreach ($line in $lines) { $sw.WriteLine($line) }
+    } finally { $sw.Dispose() }
+}
+
 function View-File {
     param([string]$p)
     $full = Resolve-WorkspacePath $p
@@ -66,10 +81,10 @@ function Write-File {
     if ($createDirs -and -not (Test-Path -LiteralPath $dir)) { New-Item -ItemType Directory -Path $dir | Out-Null }
     if ($append) {
         if (-not (Test-Path -LiteralPath $full)) { New-Item -ItemType File -Path $full -Force | Out-Null }
-        [System.IO.File]::AppendAllText($full, $c, [System.Text.Encoding]::UTF8)
+        Invoke-Retry { [System.IO.File]::AppendAllText($full, $c, [System.Text.Encoding]::UTF8) }
     }
     else {
-        [System.IO.File]::WriteAllText($full, $c, [System.Text.Encoding]::UTF8)
+        Invoke-Retry { [System.IO.File]::WriteAllText($full, $c, [System.Text.Encoding]::UTF8) }
     }
     Write-Output $full
 }
@@ -217,49 +232,61 @@ switch ($Action) {
         if (-not $Path) { throw 'Path required' }
         $full = Resolve-WorkspacePath $Path
         $arr = @()
-        if (Test-Path -LiteralPath $full) { $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw; $arr = if ($raw) { $raw -split "`r?`n" } else { @() } } else { $arr = @() }
-        $ins = if ($Content) { $Content -split "`r?`n" } else { @('') }
+        if (Test-Path -LiteralPath $full) { $raw = [System.IO.File]::ReadAllText($full); $arr = if ($raw) { $raw -split '\r?\n' } else { @() } } else { $arr = @() }
+        $ins = if ($Content) { $Content -split '\r?\n' } else { @('') }
         $preCount = [Math]::Max(0, $Offset - 1)
         $pre = if ($arr.Length -gt 0 -and $preCount -gt 0) { $arr[0..($preCount-1)] } else { @() }
         $post = if ($arr.Length -ge $preCount) { $arr[$preCount..($arr.Length-1)] } else { @() }
-        $new = $pre + $ins + $post
-        Set-Content -LiteralPath $full -Value $new -Encoding UTF8
+        $new = @()
+        $new += $pre
+        $new += $ins
+        $new += $post
+        $vals = [string[]]$new
+        Invoke-Retry { Write-Lines -p $full -lines $vals }
         Write-Output $full
     }
     'replace-lines' {
         if (-not $Path) { throw 'Path required' }
         $full = Resolve-WorkspacePath $Path
         if (-not (Test-Path -LiteralPath $full)) { throw 'Not found' }
-        $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw
-        $arr = if ($raw) { $raw -split "`r?`n" } else { @() }
+        $raw = [System.IO.File]::ReadAllText($full)
+        $arr = if ($raw) { $raw -split '\r?\n' } else { @() }
         $startIdx = [Math]::Max(0, $Offset - 1)
         $endIdx = [Math]::Min($arr.Length - 1, $startIdx + [Math]::Max(0,$Count) - 1)
-        $ins = if ($Content) { $Content -split "`r?`n" } else { @() }
+        $ins = if ($Content) { $Content -split '\r?\n' } else { @() }
         $pre = if ($startIdx -gt 0) { $arr[0..($startIdx-1)] } else { @() }
         $postStart = $endIdx + 1
         $post = if ($postStart -le ($arr.Length - 1)) { $arr[$postStart..($arr.Length-1)] } else { @() }
-        $new = $pre + $ins + $post
-        Set-Content -LiteralPath $full -Value $new -Encoding UTF8
+        $new = @()
+        $new += $pre
+        $new += $ins
+        $new += $post
+        $vals = [string[]]$new
+        Invoke-Retry { Write-Lines -p $full -lines $vals }
         Write-Output $full
     }
     'replace-lines-checked' {
         if (-not $Path) { throw 'Path required' }
         $full = Resolve-WorkspacePath $Path
         if (-not (Test-Path -LiteralPath $full)) { throw 'Not found' }
-        $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw
-        $arr = if ($raw) { $raw -split "`r?`n" } else { @() }
+        $raw = [System.IO.File]::ReadAllText($full)
+        $arr = if ($raw) { $raw -split '\r?\n' } else { @() }
         $startIdx = [Math]::Max(0, $Offset - 1)
         $endIdx = [Math]::Min($arr.Length - 1, $startIdx + [Math]::Max(0,$Count) - 1)
         $cur = if ($endIdx -ge $startIdx) { $arr[$startIdx..$endIdx] } else { @() }
-        $exp = if ($Expected) { $Expected -split "`r?`n" } else { @() }
+        $exp = if ($Expected) { $Expected -split '\r?\n' } else { @() }
         if ($cur.Length -ne $exp.Length) { throw 'mismatch' }
         for ($i=0; $i -lt $cur.Length; $i++) { if ($cur[$i] -ne $exp[$i]) { throw 'mismatch' } }
-        $ins = if ($Content) { $Content -split "`r?`n" } else { @() }
+        $ins = if ($Content) { $Content -split '\r?\n' } else { @() }
         $pre = if ($startIdx -gt 0) { $arr[0..($startIdx-1)] } else { @() }
         $postStart = $endIdx + 1
         $post = if ($postStart -le ($arr.Length - 1)) { $arr[$postStart..($arr.Length-1)] } else { @() }
-        $new = $pre + $ins + $post
-        Set-Content -LiteralPath $full -Value $new -Encoding UTF8
+        $new = @()
+        $new += $pre
+        $new += $ins
+        $new += $post
+        $vals = [string[]]$new
+        Invoke-Retry { Write-Lines -p $full -lines $vals }
         Write-Output $full
     }
     'insert-after' {
@@ -267,8 +294,8 @@ switch ($Action) {
         if (-not $Anchor) { throw 'Anchor required' }
         $full = Resolve-WorkspacePath $Path
         if (-not (Test-Path -LiteralPath $full)) { throw 'Not found' }
-        $raw = Get-Content -LiteralPath $full -Encoding UTF8 -Raw
-        $arr = if ($raw) { $raw -split "`r?`n" } else { @() }
+        $raw = [System.IO.File]::ReadAllText($full)
+        $arr = if ($raw) { $raw -split '\r?\n' } else { @() }
         $matchIdx = -1
         $count = 0
         for ($i=0; $i -lt $arr.Length; $i++) {
@@ -283,8 +310,12 @@ switch ($Action) {
         $pre = if ($matchIdx -ge 0) { $arr[0..$matchIdx] } else { @() }
         $postStart = $matchIdx + 1
         $post = if ($postStart -le ($arr.Length - 1)) { $arr[$postStart..($arr.Length-1)] } else { @() }
-        $new = $pre + $ins + $post
-        Set-Content -LiteralPath $full -Value $new -Encoding UTF8
+        $new = @()
+        $new += $pre
+        $new += $ins
+        $new += $post
+        $vals = [string[]]$new
+        Invoke-Retry { Write-Lines -p $full -lines $vals }
         Write-Output $full
     }
     'exec' {
