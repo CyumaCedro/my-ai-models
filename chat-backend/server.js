@@ -137,8 +137,8 @@ async function executeSafeQuery(query) {
 
 async function callOllama(prompt, context = '') {
   const settings = await getSettings();
-  const ollamaUrl = process.env.OLLAMA_URL || 'http://ollama:11434';
-  const model = process.env.OLLAMA_MODEL || 'deepseek-coder-v2:16b-lite-instruct-q4_K_M';
+  const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
+  const model = settings.ollama_model || 'deepseek-coder-v2';
   
   const systemPrompt = `You are a helpful AI assistant that can analyze database information. 
 ${context}
