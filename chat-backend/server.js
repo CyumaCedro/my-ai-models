@@ -149,15 +149,16 @@ Always explain your reasoning and show the SQL queries you use.
 Format your responses clearly with explanations and results.`;
 
   try {
-    const response = await axios.post(`${ollamaUrl}/api/generate`, {
-      model: model,
-      prompt: `${systemPrompt}\n\nUser: ${prompt}`,
+    const payload = {
+      model: model.includes(':') ? model.split(':')[0] : model,
+      messages: [
+        { role: 'system', content: systemPrompt },
+        { role: 'user', content: prompt }
+      ],
       stream: false
-    }, {
-      timeout: 30000
-    });
-    
-    return response.data.response;
+    };
+    const response = await axios.post(`${ollamaUrl}/api/chat`, payload, { timeout: 30000 });
+    return (response.data && response.data.message && response.data.message.content) ? response.data.message.content : '';
   } catch (error) {
     console.error('Ollama API error:', error);
     throw new Error('Failed to get response from Ollama');
