@@ -94,7 +94,7 @@ services:
     restart: "no"
 
   mysql:
-    image: mysql:8.0
+    image: mysql:8.0.2
     container_name: mysql-db
     ports:
       - "3306:3306"
