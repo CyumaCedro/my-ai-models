@@ -215,21 +215,22 @@ app.put('/api/settings', async (req, res) => {
   }
 });
 
-app.get('/api/tables', async (req, res) => {
-  try {
-    const settings = await getSettings();
-    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
-    
-    const tables = [];
-    for (const table of enabledTables) {
-      const [result] = await db.execute('SELECT COUNT(*) as count FROM ??', [table.trim()]);
-      tables.push({
-        name: table.trim(),
-        count: result[0].count
-      });
-    }
-    
-    res.json({ success: true, tables });
+  app.get('/api/tables', async (req, res) => {
+    try {
+      const settings = await getSettings();
+      const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
+      
+      const tables = [];
+      for (const table of enabledTables) {
+        const name = table.trim().replace(/[^a-zA-Z0-9_]/g, '');
+        const [result] = await db.execute(`SELECT COUNT(*) as count FROM \`${name}\``);
+        tables.push({
+          name: name,
+          count: result[0].count
+        });
+      }
+      
+      res.json({ success: true, tables });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
