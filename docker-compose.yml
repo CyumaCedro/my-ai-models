@@ -20,7 +20,7 @@ services:
       - OLLAMA_NUM_THREAD=8
       
       # TOKEN SETTINGS - adjust based on your needs
-      - OLLAMA_NUM_CTX=32768              # Default context window (8K tokens)
+      - OLLAMA_NUM_CTX=10000              # Default context window (8K tokens)
       - OLLAMA_NUM_BATCH=1024            # Processing batch size
       - OLLAMA_NUM_PREDICT=2048           # Default max output tokens
     healthcheck:
