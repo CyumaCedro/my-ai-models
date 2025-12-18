@@ -415,12 +415,13 @@ app.post('/api/chat', async (req, res) => {
       [sessionId, message, aiResponse, tablesAccessed.join(',')]
     );
     
-    res.json({
-      success: true,
-      response: aiResponse,
-      sessionId,
-      tablesAccessed
-    });
+  res.json({
+    success: true,
+    response: aiResponse,
+    sessionId,
+    queryResults,
+    tablesAccessed
+  });
     
   } catch (error) {
     console.error('Chat error:', error);

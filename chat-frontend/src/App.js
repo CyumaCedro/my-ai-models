@@ -4,6 +4,42 @@ import ReactMarkdown from 'react-markdown';
 import { format } from 'date-fns';
 
 function App() {
+  const DataTable = ({ rows }) => {
+    if (!rows || !Array.isArray(rows) || rows.length === 0) return null;
+    const columns = Object.keys(rows[0] || {});
+    if (columns.length === 0) return null;
+    const formatCell = (val) => {
+      if (val === null || val === undefined) return '';
+      if (typeof val === 'object') return JSON.stringify(val);
+      return String(val);
+    };
+    return (
+      <div className="mt-3 overflow-x-auto">
+        <table className="min-w-full border border-gray-200 rounded-lg overflow-hidden">
+          <thead className="bg-gray-50">
+            <tr>
+              {columns.map((col) => (
+                <th key={col} className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b">
+                  {col}
+                </th>
+              ))}
+            </tr>
+          </thead>
+          <tbody className="bg-white">
+            {rows.map((row, idx) => (
+              <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+                {columns.map((col) => (
+                  <td key={col} className="px-3 py-2 text-sm text-gray-800 border-b">
+                    {formatCell(row[col])}
+                  </td>
+                ))}
+              </tr>
+            ))}
+          </tbody>
+        </table>
+      </div>
+    );
+  };
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -264,6 +300,9 @@ function App() {
                       <div className="prose prose-sm max-w-none">
                         <ReactMarkdown>{message.content}</ReactMarkdown>
                       </div>
+                      {message.type === 'ai' && message.queryResults && Array.isArray(message.queryResults) && message.queryResults.length > 0 && (
+                        <DataTable rows={message.queryResults} />
+                      )}
                       <div className="mt-2 text-xs text-gray-400">
                         {format(message.timestamp, 'HH:mm:ss')}
                       </div>
