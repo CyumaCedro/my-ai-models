@@ -135,34 +135,58 @@ async function executeSafeQuery(query) {
   const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim()) : [];
   const maxResults = parseInt(settings.max_results) || 100;
   
-  // Enhanced SQL injection protection
-  const lowerQuery = query.toLowerCase().replace(/\s+/g, ' ').trim();
+  // Sanitize and normalize query
+  const cleanQuery = query.trim();
+  const lowerQuery = cleanQuery.toLowerCase().replace(/\s+/g, ' ').trim();
+  
+  // Enhanced SQL injection protection - more comprehensive patterns
   const dangerousPatterns = [
-    /\b(drop|delete|update|insert|alter|create|truncate|replace)\b/i,
+    // DDL/DML operations
+    /\b(drop|delete|update|insert|alter|create|truncate|replace|grant|revoke)\b/i,
+    // Execution and file operations
     /\bexec(ute)?\s*\(/i,
     /\binto\s+(outfile|dumpfile)\b/i,
-    /\bunion\b.*\bselect\b/i,
-    /;.*\b(select|drop|delete|update|insert)\b/i,
+    /\bload_file\s*\(/i,
+    // Time-based attacks
+    /\bsleep\s*\(/i,
+    /\bbenchmark\s*\(/i,
+    // Comment attacks
     /--/,
     /\/\*/,
-    /\bload_file\b/i,
-    /\bsleep\s*\(/i,
-    /\bbenchmark\s*\(/i
+    /\*\/$/,
+    // Union-based attacks
+    /\bunion\b.*\bselect\b/i,
+    /;.*\b(select|drop|delete|update|insert)\b/i,
+    // Subquery attacks
+    /\b(select\s+.*\s+from\s+.*\s+where\s+.*\s+in\s*\()/i,
+    // Information schema attacks
+    /\b(information_schema|sys|mysql|performance_schema)\b/i,
+    // Function attacks
+    /\b(concat|group_concat|substring|ascii|char|ord|length)\s*\(/i,
+    // Boolean-based attacks
+    /\band\s+1\s*=\s*1\b/i,
+    /\bor\s+1\s*=\s*1\b/i,
+    // Conditional attacks
+    /\bif\s*\(/i,
+    /\bcase\s+when\b/i
   ];
   
   for (const pattern of dangerousPatterns) {
     if (pattern.test(lowerQuery)) {
-      throw new Error(`Potentially dangerous SQL pattern detected`);
+      console.error('Dangerous SQL pattern detected:', pattern);
+      throw new Error(`Potentially dangerous SQL pattern detected: ${pattern.source}`);
     }
   }
   
-  // Extract and validate table names
-  const tableRegex = /\bfrom\s+`?(\w+)`?|\bjoin\s+`?(\w+)`?/gi;
+  // Extract and validate table names with enhanced security
+  const tableRegex = /\bfrom\s+`?(\w+)`?|\bjoin\s+`?(\w+)`?|\binto\s+`?(\w+)`?/gi;
   const tablesInQuery = new Set();
   let match;
-  while ((match = tableRegex.exec(query)) !== null) {
-    const tableName = (match[1] || match[2]).toLowerCase();
-    tablesInQuery.add(tableName);
+  while ((match = tableRegex.exec(cleanQuery)) !== null) {
+    const tableName = (match[1] || match[2] || match[3]).toLowerCase();
+    if (tableName && !['information_schema', 'sys', 'mysql', 'performance_schema'].includes(tableName)) {
+      tablesInQuery.add(tableName);
+    }
   }
   
   const unauthorizedTables = Array.from(tablesInQuery).filter(
@@ -170,17 +194,30 @@ async function executeSafeQuery(query) {
   );
   
   if (unauthorizedTables.length > 0) {
+    console.error('Unauthorized table access attempt:', unauthorizedTables);
     throw new Error(`Access denied to tables: ${unauthorizedTables.join(', ')}`);
   }
   
-  // Add LIMIT if not present
-  query = query.replace(/;+\s*$/i, '');
+  // Additional validation: only allow SELECT statements
+  if (!/^select\s+/i.test(lowerQuery)) {
+    throw new Error('Only SELECT queries are allowed');
+  }
+  
+  // Remove trailing semicolons and add LIMIT if not present
+  const finalQuery = cleanQuery.replace(/;+\s*$/i, '');
   if (!/\blimit\s+\d+/i.test(lowerQuery)) {
-    query += ` LIMIT ${maxResults}`;
+    const limitedQuery = finalQuery + ` LIMIT ${Math.min(maxResults, 1000)}`; // Hard cap at 1000
+    try {
+      const [rows] = await pool.execute(limitedQuery);
+      return rows;
+    } catch (error) {
+      console.error('Query execution error:', error);
+      throw new Error(`Query failed: ${error.message}`);
+    }
   }
   
   try {
-    const [rows] = await pool.execute(query);
+    const [rows] = await pool.execute(finalQuery);
     return rows;
   } catch (error) {
     console.error('Query execution error:', error);
@@ -823,3 +860,47 @@ app.get('/api/history/:sessionId', async (req, res) => {
     res.status(500).json({ success: false, error: error.message });
   }
 });
+
+// Graceful shutdown handling
+process.on('SIGTERM', async () => {
+  console.log('SIGTERM received, shutting down gracefully');
+  if (pool) {
+    await pool.end();
+  }
+  process.exit(0);
+});
+
+process.on('SIGINT', async () => {
+  console.log('SIGINT received, shutting down gracefully');
+  if (pool) {
+    await pool.end();
+  }
+  process.exit(0);
+});
+
+// Start server
+async function startServer() {
+  try {
+    await initDatabase();
+    app.listen(PORT, () => {
+      console.log(`Chat backend server running on port ${PORT}`);
+      console.log(`Health check available at http://localhost:${PORT}/health`);
+    });
+  } catch (error) {
+    console.error('Failed to start server:', error);
+    process.exit(1);
+  }
+}
+
+// Handle uncaught exceptions
+process.on('uncaughtException', (error) => {
+  console.error('Uncaught Exception:', error);
+  process.exit(1);
+});
+
+process.on('unhandledRejection', (reason, promise) => {
+  console.error('Unhandled Rejection at:', promise, 'reason:', reason);
+  process.exit(1);
+});
+
+startServer();

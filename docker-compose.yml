@@ -157,17 +157,28 @@ services:
       # Backend performance
       - OLLAMA_REQUEST_TIMEOUT=300000
       - OLLAMA_KEEP_ALIVE=600
+      - CACHE_DURATION=60000
+      - MAX_RESULTS=100
+      - CONNECTION_LIMIT=10
     volumes:
       - ./chat-backend:/app
       - /app/node_modules
     depends_on:
       mysql:
         condition: service_healthy
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
         limits:
           memory: 1G
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
 
   chat-frontend:
     build:
