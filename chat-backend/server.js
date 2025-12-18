@@ -20,19 +20,22 @@ app.use(morgan('combined'));
 app.use(cors());
 app.use(express.json());
 
-// Database connection
-let db;
+// Database connection pool for better performance
+let pool;
 async function initDatabase() {
   try {
-    db = await mysql.createConnection({
+    pool = mysql.createPool({
       host: process.env.MYSQL_HOST || 'localhost',
       port: process.env.MYSQL_PORT || 3306,
       user: process.env.MYSQL_USER || 'chatuser',
       password: process.env.MYSQL_PASSWORD || 'chatpass',
       database: process.env.MYSQL_DATABASE || 'chatdb',
-      namedPlaceholders: true
+      namedPlaceholders: true,
+      waitForConnections: true,
+      connectionLimit: 10,
+      queueLimit: 0
     });
-    console.log('Connected to MySQL database');
+    console.log('Connected to MySQL database pool');
   } catch (error) {
     console.error('Database connection failed:', error);
     process.exit(1);
@@ -51,7 +54,7 @@ async function getSettings() {
   }
 
   try {
-    const [rows] = await db.execute('SELECT setting_name, setting_value FROM chat_settings');
+    const [rows] = await pool.execute('SELECT setting_name, setting_value FROM chat_settings');
     settingsCache = {};
     rows.forEach(row => {
       settingsCache[row.setting_name] = row.setting_value;
@@ -64,26 +67,62 @@ async function getSettings() {
   }
 }
 
+// Enhanced schema fetching with relationships and constraints
 async function getTableSchema() {
   const settings = await getSettings();
   const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
   
   if (enabledTables.length === 0) return '';
   
-  let schema = 'Database Schema:\n';
+  let schema = 'Database Schema (use this to understand data relationships):\n';
+  
   for (const table of enabledTables) {
     try {
-      const [columns] = await db.execute(`
-        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, COLUMN_COMMENT
+      const tableName = table.trim();
+      
+      // Get column information
+      const [columns] = await pool.execute(`
+        SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, 
+               COLUMN_DEFAULT, COLUMN_COMMENT, CHARACTER_MAXIMUM_LENGTH
         FROM INFORMATION_SCHEMA.COLUMNS 
         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
         ORDER BY ORDINAL_POSITION
-      `, [table.trim()]);
+      `, [tableName]);
       
-      schema += `\nTable: ${table.trim()}\n`;
+      // Get foreign key relationships
+      const [foreignKeys] = await pool.execute(`
+        SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
+        FROM INFORMATION_SCHEMA.KEY_COLUMN_USAGE
+        WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_NAME = ?
+          AND REFERENCED_TABLE_NAME IS NOT NULL
+      `, [tableName]);
+      
+      // Get sample data for better context
+      const [sampleData] = await pool.execute(`SELECT * FROM \`${tableName}\` LIMIT 3`);
+      
+      schema += `\nTable: ${tableName}\n`;
+      schema += `Columns:\n`;
       columns.forEach(col => {
-        schema += `  - ${col.COLUMN_NAME} (${col.DATA_TYPE}) ${col.IS_NULLABLE === 'NO' ? 'NOT NULL' : 'NULL'} ${col.COLUMN_KEY ? 'KEY' : ''}\n`;
+        const nullable = col.IS_NULLABLE === 'NO' ? 'NOT NULL' : 'NULL';
+        const keyInfo = col.COLUMN_KEY === 'PRI' ? '[PRIMARY KEY]' : 
+                       col.COLUMN_KEY === 'UNI' ? '[UNIQUE]' : 
+                       col.COLUMN_KEY === 'MUL' ? '[INDEXED]' : '';
+        const comment = col.COLUMN_COMMENT ? `// ${col.COLUMN_COMMENT}` : '';
+        schema += `  - ${col.COLUMN_NAME}: ${col.DATA_TYPE}${col.CHARACTER_MAXIMUM_LENGTH ? `(${col.CHARACTER_MAXIMUM_LENGTH})` : ''} ${nullable} ${keyInfo} ${comment}\n`;
       });
+      
+      if (foreignKeys.length > 0) {
+        schema += `Relationships:\n`;
+        foreignKeys.forEach(fk => {
+          schema += `  - ${fk.COLUMN_NAME} -> ${fk.REFERENCED_TABLE_NAME}.${fk.REFERENCED_COLUMN_NAME}\n`;
+        });
+      }
+      
+      if (sampleData.length > 0) {
+        schema += `Sample data (${sampleData.length} rows): ${JSON.stringify(sampleData[0])}\n`;
+      }
+      
     } catch (error) {
       console.error(`Error getting schema for table ${table}:`, error);
     }
@@ -96,42 +135,52 @@ async function executeSafeQuery(query) {
   const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim()) : [];
   const maxResults = parseInt(settings.max_results) || 100;
   
-  // Basic SQL injection protection
-  const lowerQuery = query.toLowerCase();
-  const dangerousKeywords = ['drop', 'delete', 'update', 'insert', 'alter', 'create', 'truncate', 'exec', 'execute'];
+  // Enhanced SQL injection protection
+  const lowerQuery = query.toLowerCase().replace(/\s+/g, ' ').trim();
+  const dangerousPatterns = [
+    /\b(drop|delete|update|insert|alter|create|truncate|replace)\b/i,
+    /\bexec(ute)?\s*\(/i,
+    /\binto\s+(outfile|dumpfile)\b/i,
+    /\bunion\b.*\bselect\b/i,
+    /;.*\b(select|drop|delete|update|insert)\b/i,
+    /--/,
+    /\/\*/,
+    /\bload_file\b/i,
+    /\bsleep\s*\(/i,
+    /\bbenchmark\s*\(/i
+  ];
   
-  for (const keyword of dangerousKeywords) {
-    if (lowerQuery.includes(keyword)) {
-      throw new Error(`Dangerous SQL keyword detected: ${keyword}`);
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(lowerQuery)) {
+      throw new Error(`Potentially dangerous SQL pattern detected`);
     }
   }
   
-  // Check if query only accesses enabled tables
-  const tablesInQuery = [];
-  const tableMatches = query.match(/from\s+(\w+)|join\s+(\w+)/gi);
-  if (tableMatches) {
-    tableMatches.forEach(match => {
-      const parts = match.toLowerCase().split(/\s+/);
-      const tableName = parts[parts.length - 1];
-      if (!tablesInQuery.includes(tableName)) {
-        tablesInQuery.push(tableName);
-      }
-    });
+  // Extract and validate table names
+  const tableRegex = /\bfrom\s+`?(\w+)`?|\bjoin\s+`?(\w+)`?/gi;
+  const tablesInQuery = new Set();
+  let match;
+  while ((match = tableRegex.exec(query)) !== null) {
+    const tableName = (match[1] || match[2]).toLowerCase();
+    tablesInQuery.add(tableName);
   }
   
-  const unauthorizedTables = tablesInQuery.filter(table => !enabledTables.includes(table));
+  const unauthorizedTables = Array.from(tablesInQuery).filter(
+    table => !enabledTables.map(t => t.toLowerCase()).includes(table)
+  );
+  
   if (unauthorizedTables.length > 0) {
-    throw new Error(`Access to tables not allowed: ${unauthorizedTables.join(', ')}`);
+    throw new Error(`Access denied to tables: ${unauthorizedTables.join(', ')}`);
   }
   
   // Add LIMIT if not present
   query = query.replace(/;+\s*$/i, '');
-  if (!lowerQuery.includes('limit')) {
+  if (!/\blimit\s+\d+/i.test(lowerQuery)) {
     query += ` LIMIT ${maxResults}`;
   }
   
   try {
-    const [rows] = await db.execute(query);
+    const [rows] = await pool.execute(query);
     return rows;
   } catch (error) {
     console.error('Query execution error:', error);
@@ -139,31 +188,57 @@ async function executeSafeQuery(query) {
   }
 }
 
-async function callOllama(prompt, context = '') {
+// Improved prompt engineering for better AI responses
+async function callOllama(prompt, context = '', conversationHistory = []) {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You answer with a direct result only.
-Always prefer data from enabled tables before any general knowledge.
-Never mention databases, tables, queries, or SQL.
-For internal use ONLY, put the SQL needed inside <sql>...</sql> tags. Do not echo it in the visible answer.
-Do not use code fences or show technical artifacts.
-Use LIMIT when appropriate. Only access tables listed in the provided schema. Never use DROP/DELETE/UPDATE/INSERT/ALTER/CREATE/TRUNCATE/EXEC/EXECUTE.
-If the database cannot answer, provide a brief direct answer from general knowledge with no explanations.
-${context}
-${context ? '\nUse the above schema information silently.\n' : ''}`;
+  const systemPrompt = `You are a helpful data assistant. Follow these rules strictly:
 
-  const minimalPayload = {
+1. ANSWER FORMAT: Provide clear, natural language answers. Be conversational and helpful.
+2. SQL GENERATION: When you need to query data, include SQL in <sql>...</sql> tags. This will be executed automatically.
+3. QUERY BEST PRACTICES:
+   - Use JOINs when data spans multiple tables
+   - Use aggregate functions (COUNT, SUM, AVG) for statistics
+   - Use GROUP BY for categorized results
+   - Use ORDER BY to sort results logically
+   - Use WHERE clauses to filter data precisely
+   - ALWAYS use LIMIT for performance
+4. TABLE ACCESS: Only query tables listed in the schema below
+5. NO TECHNICAL JARGON: Never mention "database", "SQL", "query", or technical terms in your visible answer
+6. FORBIDDEN OPERATIONS: Never use DROP, DELETE, UPDATE, INSERT, ALTER, CREATE, TRUNCATE, EXEC, EXECUTE
+7. DATA PRIORITY: Always prefer actual database data over general knowledge
+8. CONTEXT AWARENESS: Consider previous conversation context when answering
+
+${context}
+
+Available Schema:
+${context}`;
+
+  const messages = [
+    { role: 'system', content: systemPrompt }
+  ];
+  
+  // Add conversation history for context (last 3 exchanges)
+  const recentHistory = conversationHistory.slice(-6);
+  messages.push(...recentHistory);
+  
+  messages.push({ role: 'user', content: prompt });
+
+  const payload = {
     model: model,
-    messages: [
-      { role: 'system', content: systemPrompt },
-      { role: 'user', content: prompt }
-    ],
-    stream: false
+    messages: messages,
+    stream: false,
+    options: {
+      temperature: 0.1, // Lower temperature for more consistent SQL generation
+      top_p: 0.9,
+      num_predict: 1000
+    }
   };
+
   const url = new URL(`${ollamaUrl}/api/chat`);
-  const body = JSON.stringify(minimalPayload);
+  const body = JSON.stringify(payload);
   const options = {
     hostname: url.hostname,
     port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
@@ -175,6 +250,7 @@ ${context ? '\nUse the above schema information silently.\n' : ''}`;
       'Content-Length': Buffer.byteLength(body)
     }
   };
+
   const client = url.protocol === 'https:' ? https : http;
   const responseData = await new Promise((resolve, reject) => {
     const req = client.request(options, res => {
@@ -185,47 +261,81 @@ ${context ? '\nUse the above schema information silently.\n' : ''}`;
         if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
           resolve(data);
         } else {
-          reject(new Error(`Status ${res.statusCode}`));
+          reject(new Error(`Ollama API returned status ${res.statusCode}`));
         }
       });
     });
     req.on('error', reject);
     req.setTimeout(120000, () => {
-      req.destroy(new Error('Timeout'));
+      req.destroy(new Error('Request timeout'));
     });
     req.end(body);
   });
+
   const parsed = JSON.parse(responseData);
-  return parsed && parsed.message && parsed.message.content ? parsed.message.content : ''
+  return parsed?.message?.content || '';
 }
 
 function stripTechnicalContent(text) {
   if (!text) return '';
-  let t = text;
-  t = t.replace(/<sql>[\s\S]*?<\/sql>/gi, '');
-  t = t.replace(/```[\s\S]*?```/g, '');
-  t = t.replace(/`[\s\S]*?`/g, '');
-  return t.trim();
+  let cleaned = text;
+  
+  // Remove SQL tags and content
+  cleaned = cleaned.replace(/<sql>[\s\S]*?<\/sql>/gi, '');
+  
+  // Remove code blocks
+  cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
+  cleaned = cleaned.replace(/`[^`]+`/g, '');
+  
+  // Remove SQL statements that leaked through
+  cleaned = cleaned.replace(/\b(SELECT|WITH|FROM|WHERE|JOIN|GROUP BY|ORDER BY|HAVING|LIMIT)\b[\s\S]*?(;|\n\n|$)/gi, '');
+  
+  // Remove technical terms accidentally included
+  cleaned = cleaned.replace(/\b(database|query|table|SQL|execute|fetch)\b/gi, '');
+  
+  return cleaned.trim();
 }
 
-async function summarizeWithData(question, dataJson) {
+async function summarizeWithData(question, dataJson, context = '') {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  const systemPrompt = `You respond with a direct answer only.
-Do not mention databases, queries, or SQL.
-No code fences. No explanations. No preambles.
-Use the provided data to answer succinctly.`;
-  const minimalPayload = {
+  
+  const systemPrompt = `You are a data analyst. Provide clear, insightful answers based on the data provided.
+
+RULES:
+- Analyze the data and answer the user's question directly
+- Use natural language - no technical jargon
+- If data shows patterns or insights, mention them
+- Be concise but complete
+- Never mention "database", "query", or "SQL"
+- Format numbers with appropriate units
+- Highlight key findings
+
+${context ? 'Additional context: ' + context : ''}`;
+
+  const userPrompt = `Question: ${question}
+
+Data retrieved:
+${dataJson}
+
+Please analyze this data and provide a clear, helpful answer to the question.`;
+
+  const payload = {
     model: model,
     messages: [
       { role: 'system', content: systemPrompt },
-      { role: 'user', content: `Question: ${question}\nData:\n${dataJson}` }
+      { role: 'user', content: userPrompt }
     ],
-    stream: false
+    stream: false,
+    options: {
+      temperature: 0.3,
+      top_p: 0.9
+    }
   };
+
   const url = new URL(`${ollamaUrl}/api/chat`);
-  const body = JSON.stringify(minimalPayload);
+  const body = JSON.stringify(payload);
   const options = {
     hostname: url.hostname,
     port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
@@ -237,6 +347,7 @@ Use the provided data to answer succinctly.`;
       'Content-Length': Buffer.byteLength(body)
     }
   };
+
   const client = url.protocol === 'https:' ? https : http;
   const responseData = await new Promise((resolve, reject) => {
     const req = client.request(options, res => {
@@ -257,18 +368,20 @@ Use the provided data to answer succinctly.`;
     });
     req.end(body);
   });
+
   const parsed = JSON.parse(responseData);
-  return parsed && parsed.message && parsed.message.content ? stripTechnicalContent(parsed.message.content) : ''
+  return stripTechnicalContent(parsed?.message?.content || '');
 }
 
 async function callGeneralAnswer(prompt) {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  const systemPrompt = `Answer directly with a concise result.
-Do not mention databases, queries, or SQL.
-No explanations. No code fences.`;
-  const minimalPayload = {
+  
+  const systemPrompt = `You are a helpful assistant. Answer questions clearly and concisely.
+Keep responses natural and conversational. No technical jargon unless specifically asked.`;
+
+  const payload = {
     model: model,
     messages: [
       { role: 'system', content: systemPrompt },
@@ -276,8 +389,9 @@ No explanations. No code fences.`;
     ],
     stream: false
   };
+
   const url = new URL(`${ollamaUrl}/api/chat`);
-  const body = JSON.stringify(minimalPayload);
+  const body = JSON.stringify(payload);
   const options = {
     hostname: url.hostname,
     port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
@@ -289,6 +403,7 @@ No explanations. No code fences.`;
       'Content-Length': Buffer.byteLength(body)
     }
   };
+
   const client = url.protocol === 'https:' ? https : http;
   const responseData = await new Promise((resolve, reject) => {
     const req = client.request(options, res => {
@@ -309,39 +424,101 @@ No explanations. No code fences.`;
     });
     req.end(body);
   });
+
   const parsed = JSON.parse(responseData);
-  return parsed && parsed.message && parsed.message.content ? stripTechnicalContent(parsed.message.content) : ''
+  return stripTechnicalContent(parsed?.message?.content || '');
 }
 
 async function buildSchemaMap(enabledTables) {
   const map = {};
   if (!enabledTables || enabledTables.length === 0) return map;
+  
   for (const table of enabledTables) {
     try {
-      const [cols] = await db.execute(
-        `SELECT COLUMN_NAME FROM INFORMATION_SCHEMA.COLUMNS WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? ORDER BY ORDINAL_POSITION`,
-        [table.trim()]
+      const tableName = table.trim();
+      const [cols] = await pool.execute(
+        `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT 
+         FROM INFORMATION_SCHEMA.COLUMNS 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? 
+         ORDER BY ORDINAL_POSITION`,
+        [tableName]
       );
-      map[table.trim()] = cols.map(c => c.COLUMN_NAME.toLowerCase());
-    } catch (_) {}
+      
+      map[tableName] = {
+        columns: cols.map(c => ({
+          name: c.COLUMN_NAME.toLowerCase(),
+          type: c.DATA_TYPE,
+          comment: c.COLUMN_COMMENT
+        }))
+      };
+    } catch (err) {
+      console.error(`Error building schema for ${table}:`, err);
+    }
   }
   return map;
 }
 
 function findRelevantTables(message, schemaMap) {
-  const text = (message || '').toLowerCase();
-  const tokens = Array.from(new Set(text.split(/[^a-z0-9_]+/).filter(Boolean)));
+  const text = message.toLowerCase();
+  const tokens = text.split(/[^a-z0-9_]+/).filter(Boolean);
   const scores = [];
-  for (const [table, columns] of Object.entries(schemaMap)) {
+  
+  for (const [table, info] of Object.entries(schemaMap)) {
     let score = 0;
-    if (tokens.some(t => table.includes(t))) score += 2;
-    for (const t of tokens) {
-      if (columns.some(c => c.includes(t))) score += 1;
+    const tableLower = table.toLowerCase();
+    
+    // Direct table name mention
+    if (tokens.some(t => tableLower.includes(t) || t.includes(tableLower))) {
+      score += 5;
     }
-    if (score > 0) scores.push({ table, score });
+    
+    // Column name matches
+    for (const col of info.columns) {
+      if (tokens.some(t => col.name.includes(t) || t.includes(col.name))) {
+        score += 2;
+      }
+      // Check column comments for semantic matches
+      if (col.comment) {
+        const commentLower = col.comment.toLowerCase();
+        if (tokens.some(t => commentLower.includes(t))) {
+          score += 1;
+        }
+      }
+    }
+    
+    if (score > 0) {
+      scores.push({ table, score });
+    }
   }
+  
   scores.sort((a, b) => b.score - a.score);
-  return scores.map(s => s.table);
+  return scores.slice(0, 3).map(s => s.table); // Return top 3 relevant tables
+}
+
+// Enhanced conversation history retrieval
+async function getConversationHistory(sessionId, limit = 3) {
+  try {
+    const [rows] = await pool.execute(
+      `SELECT user_message, ai_response 
+       FROM chat_history 
+       WHERE session_id = ? 
+       ORDER BY timestamp DESC 
+       LIMIT ?`,
+      [sessionId, limit]
+    );
+    
+    // Convert to message format for Ollama
+    const messages = [];
+    for (const row of rows.reverse()) {
+      messages.push({ role: 'user', content: row.user_message });
+      messages.push({ role: 'assistant', content: row.ai_response });
+    }
+    
+    return messages;
+  } catch (error) {
+    console.error('Error fetching conversation history:', error);
+    return [];
+  }
 }
 
 // Validation schemas
@@ -378,8 +555,10 @@ app.put('/api/settings', async (req, res) => {
     const { settings } = value;
     
     for (const [key, val] of Object.entries(settings)) {
-      await db.execute(
-        'INSERT INTO chat_settings (setting_name, setting_value) VALUES (?, ?) ON DUPLICATE KEY UPDATE setting_value = ?, updated_at = CURRENT_TIMESTAMP',
+      await pool.execute(
+        `INSERT INTO chat_settings (setting_name, setting_value) 
+         VALUES (?, ?) 
+         ON DUPLICATE KEY UPDATE setting_value = ?, updated_at = CURRENT_TIMESTAMP`,
         [key, val, val]
       );
     }
@@ -395,22 +574,32 @@ app.put('/api/settings', async (req, res) => {
   }
 });
 
-  app.get('/api/tables', async (req, res) => {
-    try {
-      const settings = await getSettings();
-      const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
+app.get('/api/tables', async (req, res) => {
+  try {
+    const settings = await getSettings();
+    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
+    
+    const tables = [];
+    for (const table of enabledTables) {
+      const name = table.trim().replace(/[^a-zA-Z0-9_]/g, '');
+      const [result] = await pool.execute(`SELECT COUNT(*) as count FROM \`${name}\``);
       
-      const tables = [];
-      for (const table of enabledTables) {
-        const name = table.trim().replace(/[^a-zA-Z0-9_]/g, '');
-        const [result] = await db.execute(`SELECT COUNT(*) as count FROM \`${name}\``);
-        tables.push({
-          name: name,
-          count: result[0].count
-        });
-      }
+      // Get table comment/description
+      const [tableInfo] = await pool.execute(
+        `SELECT TABLE_COMMENT 
+         FROM INFORMATION_SCHEMA.TABLES 
+         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
+        [name]
+      );
       
-      res.json({ success: true, tables });
+      tables.push({
+        name: name,
+        count: result[0].count,
+        description: tableInfo[0]?.TABLE_COMMENT || ''
+      });
+    }
+    
+    res.json({ success: true, tables });
   } catch (error) {
     res.status(500).json({ success: false, error: error.message });
   }
@@ -434,20 +623,33 @@ app.post('/api/chat', async (req, res) => {
       context = await getTableSchema();
     }
     
-    // Check if message is asking for data
-  const dataKeywords = ['show', 'get', 'list', 'find', 'search', 'count', 'how many', 'what', 'when', 'where'];
-  const isDataRequest = dataKeywords.some(keyword => message.toLowerCase().includes(keyword));
-  
-  let aiResponse;
-  let queryResults = null;
-  const enabledTables = (settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim()) : []);
-  const schemaMap = await buildSchemaMap(enabledTables);
-  try {
-    aiResponse = await callOllama(message, context);
-  } catch (ollamaError) {
-    const fallback = 'Try again later.';
-    await db.execute(
-        'INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) VALUES (?, ?, ?, ?)',
+    // Get conversation history for better context
+    const conversationHistory = await getConversationHistory(sessionId);
+    
+    // Determine if this is a data request
+    const dataKeywords = [
+      'show', 'list', 'get', 'find', 'search', 'count', 'how many', 'how much',
+      'what', 'when', 'where', 'who', 'which', 'display', 'give me', 'tell me',
+      'average', 'total', 'sum', 'maximum', 'minimum', 'latest', 'recent'
+    ];
+    const isDataRequest = dataKeywords.some(keyword => 
+      message.toLowerCase().includes(keyword)
+    );
+    
+    let aiResponse;
+    let queryResults = null;
+    const enabledTables = settings.enabled_tables ? 
+      settings.enabled_tables.split(',').map(t => t.trim()) : [];
+    const schemaMap = await buildSchemaMap(enabledTables);
+    
+    try {
+      aiResponse = await callOllama(message, context, conversationHistory);
+    } catch (ollamaError) {
+      console.error('Ollama error:', ollamaError);
+      const fallback = "I'm having trouble processing your request right now. Please try again in a moment.";
+      await pool.execute(
+        `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+         VALUES (?, ?, ?, ?)`,
         [sessionId, message, fallback, '']
       );
       return res.json({
@@ -455,132 +657,169 @@ app.post('/api/chat', async (req, res) => {
         response: fallback,
         sessionId
       });
-  }
-  
-  // Try to extract and execute SQL queries from the response
-  if (isDataRequest) {
-    const sqlMatch = aiResponse.match(/<sql>([\s\S]*?)<\/sql>/i) ||
-                     aiResponse.match(/```sql\n([\s\S]*?)\n```/i) || 
-                     aiResponse.match(/SELECT[\s\S]*?(?=\n\n|\n[A-Z]|\n#|$)/i);
+    }
     
-    if (sqlMatch) {
-      const query = sqlMatch[1] || sqlMatch[0];
-      try {
-        queryResults = await executeSafeQuery(query);
-        
-        // Extract table names from query
-        const tableMatches = query.match(/from\s+(\w+)|join\s+(\w+)/gi);
-        if (tableMatches) {
-          tableMatches.forEach(match => {
-            const parts = match.toLowerCase().split(/\s+/);
-            const tableName = parts[parts.length - 1];
-            if (!tablesAccessed.includes(tableName)) {
-              tablesAccessed.push(tableName);
-            }
-          });
+    // Enhanced SQL extraction and execution
+    if (isDataRequest && aiResponse) {
+      const sqlPatterns = [
+        /<sql>([\s\S]*?)<\/sql>/i,
+        /```sql\n([\s\S]*?)\n```/i,
+        /```\n(SELECT[\s\S]*?)\n```/i,
+        /(SELECT\s+[\s\S]*?FROM[\s\S]*?(?=\n\n|\n[A-Z]|$))/i
+      ];
+      
+      let extractedQuery = null;
+      for (const pattern of sqlPatterns) {
+        const match = aiResponse.match(pattern);
+        if (match) {
+          extractedQuery = (match[1] || match[0]).trim();
+          break;
         }
-        const dataJson = JSON.stringify(queryResults, null, 2);
+      }
+      
+      if (extractedQuery) {
         try {
-          const summarized = await summarizeWithData(message, dataJson);
-          aiResponse = summarized || stripTechnicalContent(aiResponse);
-        } catch (summErr) {
-          aiResponse = stripTechnicalContent(aiResponse);
-        }
-        if (Array.isArray(queryResults) && queryResults.length === 0) {
-          const relevant = findRelevantTables(message, schemaMap);
-          if (relevant.length > 0) {
-            const fallbackTable = relevant[0];
+          queryResults = await executeSafeQuery(extractedQuery);
+          
+          // Extract accessed tables
+          const tableMatches = extractedQuery.match(/\bfrom\s+`?(\w+)`?|\bjoin\s+`?(\w+)`?/gi);
+          if (tableMatches) {
+            tableMatches.forEach(match => {
+              const tableName = match.split(/\s+/).pop().replace(/`/g, '').toLowerCase();
+              if (!tablesAccessed.includes(tableName)) {
+                tablesAccessed.push(tableName);
+              }
+            });
+          }
+          
+          // Summarize results with data
+          if (queryResults && queryResults.length > 0) {
+            const dataJson = JSON.stringify(queryResults.slice(0, 50), null, 2); // Limit for token size
             try {
-              const rows = await executeSafeQuery(`SELECT * FROM ${fallbackTable}`);
-              queryResults = rows;
-              const summarized = await summarizeWithData(message, JSON.stringify(rows, null, 2));
-              aiResponse = summarized || aiResponse;
-              if (!tablesAccessed.includes(fallbackTable)) tablesAccessed.push(fallbackTable);
-            } catch (_) {}
+              const summarized = await summarizeWithData(message, dataJson, context);
+              if (summarized) {
+                aiResponse = summarized;
+              }
+            } catch (summErr) {
+              console.error('Summarization error:', summErr);
+            }
+          } else if (queryResults && queryResults.length === 0) {
+            // Empty result set - try fallback query
+            const relevantTables = findRelevantTables(message, schemaMap);
+            if (relevantTables.length > 0) {
+              for (const fallbackTable of relevantTables) {
+                try {
+                  const fallbackQuery = `SELECT * FROM ${fallbackTable} LIMIT 10`;
+                  const rows = await executeSafeQuery(fallbackQuery);
+                  if (rows.length > 0) {
+                    queryResults = rows;
+                    const summarized = await summarizeWithData(
+                      message, 
+                      JSON.stringify(rows, null, 2),
+                      context
+                    );
+                    if (summarized) {
+                      aiResponse = summarized;
+                    }
+                    if (!tablesAccessed.includes(fallbackTable)) {
+                      tablesAccessed.push(fallbackTable);
+                    }
+                    break;
+                  }
+                } catch (fbErr) {
+                  console.error(`Fallback query error for ${fallbackTable}:`, fbErr);
+                }
+              }
+            }
+          }
+          
+        } catch (queryError) {
+          console.error('Query execution error:', queryError);
+          // Keep the original AI response if query fails
+        }
+      } else {
+        // No SQL found but is a data request - try to find relevant table
+        const relevantTables = findRelevantTables(message, schemaMap);
+        if (relevantTables.length > 0) {
+          for (const table of relevantTables) {
+            try {
+              const rows = await executeSafeQuery(`SELECT * FROM ${table} LIMIT 10`);
+              if (rows.length > 0) {
+                queryResults = rows;
+                const summarized = await summarizeWithData(
+                  message, 
+                  JSON.stringify(rows, null, 2),
+                  context
+                );
+                if (summarized) {
+                  aiResponse = summarized;
+                }
+                if (!tablesAccessed.includes(table)) {
+                  tablesAccessed.push(table);
+                }
+                break;
+              }
+            } catch (err) {
+              console.error(`Error querying ${table}:`, err);
+            }
           }
         }
-      } catch (queryError) {
-        aiResponse = stripTechnicalContent(aiResponse);
-      }
-    } else {
-      const relevant = findRelevantTables(message, schemaMap);
-      if (relevant.length > 0) {
-        const fallbackTable = relevant[0];
-        try {
-          const rows = await executeSafeQuery(`SELECT * FROM ${fallbackTable}`);
-          queryResults = rows;
-          const summarized = await summarizeWithData(message, JSON.stringify(rows, null, 2));
-          aiResponse = summarized || stripTechnicalContent(aiResponse);
-          if (!tablesAccessed.includes(fallbackTable)) tablesAccessed.push(fallbackTable);
-        } catch (_) {}
       }
     }
-  }
-  
-  aiResponse = stripTechnicalContent(aiResponse);
-  if (!aiResponse || aiResponse.trim() === '') {
-    try {
-      aiResponse = await callGeneralAnswer(message);
-    } catch (_) {
-      aiResponse = 'Try again later.';
+    
+    // Clean up response
+    aiResponse = stripTechnicalContent(aiResponse);
+    
+    // Fallback to general answer if needed
+    if (!aiResponse || aiResponse.trim() === '') {
+      try {
+        aiResponse = await callGeneralAnswer(message);
+      } catch (genErr) {
+        console.error('General answer error:', genErr);
+        aiResponse = "I apologize, but I'm having trouble generating a response. Could you please rephrase your question?";
+      }
     }
-  }
-  
-  // Save chat history
-  await db.execute(
-    'INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) VALUES (?, ?, ?, ?)',
-    [sessionId, message, aiResponse, tablesAccessed.join(',')]
+    
+    // Save to chat history
+    await pool.execute(
+      `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+       VALUES (?, ?, ?, ?)`,
+      [sessionId, message, aiResponse, tablesAccessed.join(',')]
     );
     
-  res.json({
-    success: true,
-    response: aiResponse,
-    sessionId,
-    queryResults,
-    tablesAccessed
-  });
+    res.json({
+      success: true,
+      response: aiResponse,
+      sessionId,
+      queryResults: queryResults ? queryResults.slice(0, 100) : null, // Limit results sent to client
+      tablesAccessed
+    });
     
   } catch (error) {
     console.error('Chat error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    res.status(500).json({ 
+      success: false, 
+      error: 'An error occurred while processing your request. Please try again.' 
+    });
   }
 });
 
 app.get('/api/history/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
-    const [rows] = await db.execute(
-      'SELECT * FROM chat_history WHERE session_id = ? ORDER BY timestamp DESC LIMIT 50',
-      [sessionId]
-    );
+    const limit = parseInt(req.query.limit) || 50;
     
+    const [rows] = await pool.execute(
+      `SELECT id, user_message, ai_response, tables_accessed, timestamp 
+       FROM chat_history 
+       WHERE session_id = ? 
+       ORDER BY timestamp DESC 
+       LIMIT ?`,
+      [sessionId, limit]
+    );
     res.json({ success: true, history: rows });
   } catch (error) {
+    console.error('History error:', error);
     res.status(500).json({ success: false, error: error.message });
   }
-});
-
-// Start server
-async function startServer() {
-  await initDatabase();
-  
-  app.listen(PORT, '0.0.0.0', () => {
-    console.log(`Chat backend server running on port ${PORT}`);
-    console.log(`Health check: http://localhost:${PORT}/health`);
-  });
-}
-
-startServer().catch(console.error);
-
-// Graceful shutdown
-process.on('SIGTERM', async () => {
-  console.log('SIGTERM received, shutting down gracefully');
-  if (db) await db.end();
-  process.exit(0);
-});
-
-process.on('SIGINT', async () => {
-  console.log('SIGINT received, shutting down gracefully');
-  if (db) await db.end();
-  process.exit(0);
 });
