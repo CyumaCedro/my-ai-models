@@ -1,45 +1,271 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Settings, Database, MessageSquare, Trash2, Save, X } from 'lucide-react';
+import { Send, Settings, Database, MessageSquare, Trash2, Save, X, Copy, Check, ExternalLink, Image as ImageIcon, Table } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
+import remarkGfm from 'remark-gfm';
+import rehypeKatex from 'rehype-katex';
+import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
+import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { format } from 'date-fns';
+import 'katex/dist/katex.min.css';
 
 function App() {
+  const [copiedCode, setCopiedCode] = useState(null);
+  const [expandedImages, setExpandedImages] = useState(new Set());
+
+  // Enhanced DataTable component with better styling
   const DataTable = ({ rows }) => {
     if (!rows || !Array.isArray(rows) || rows.length === 0) return null;
     const columns = Object.keys(rows[0] || {});
     if (columns.length === 0) return null;
+    
     const formatCell = (val) => {
       if (val === null || val === undefined) return '';
-      if (typeof val === 'object') return JSON.stringify(val);
+      if (typeof val === 'object') return JSON.stringify(val, null, 2);
+      if (typeof val === 'boolean') return val ? '✓' : '✗';
       return String(val);
     };
+
     return (
-      <div className="mt-3 overflow-x-auto">
-        <table className="min-w-full border border-gray-200 rounded-lg overflow-hidden">
-          <thead className="bg-gray-50">
-            <tr>
-              {columns.map((col) => (
-                <th key={col} className="px-3 py-2 text-left text-xs font-semibold text-gray-700 border-b">
-                  {col}
-                </th>
-              ))}
-            </tr>
-          </thead>
-          <tbody className="bg-white">
-            {rows.map((row, idx) => (
-              <tr key={idx} className={idx % 2 === 0 ? 'bg-white' : 'bg-gray-50'}>
+      <div className="mt-4">
+        <div className="flex items-center space-x-2 mb-2">
+          <Table className="w-4 h-4 text-gray-600" />
+          <span className="text-sm font-medium text-gray-700">
+            Query Results ({rows.length} rows)
+          </span>
+        </div>
+        <div className="overflow-x-auto rounded-lg border border-gray-200 shadow-sm">
+          <table className="enhanced-data-table">
+            <thead>
+              <tr>
                 {columns.map((col) => (
-                  <td key={col} className="px-3 py-2 text-sm text-gray-800 border-b">
-                    {formatCell(row[col])}
-                  </td>
+                  <th key={col}>{col}</th>
                 ))}
               </tr>
-            ))}
-          </tbody>
-        </table>
+            </thead>
+            <tbody>
+              {rows.map((row, idx) => (
+                <tr key={idx}>
+                  {columns.map((col) => (
+                    <td key={col}>
+                      {typeof row[col] === 'object' ? (
+                        <pre className="text-xs bg-gray-100 p-1 rounded overflow-x-auto">
+                          {formatCell(row[col])}
+                        </pre>
+                      ) : (
+                        formatCell(row[col])
+                      )}
+                    </td>
+                  ))}
+                </tr>
+              ))}
+            </tbody>
+          </table>
+        </div>
       </div>
     );
   };
+
+  // Custom components for enhanced markdown rendering
+  const components = {
+    // Code blocks with syntax highlighting and copy button
+    code: ({ node, inline, className, children, ...props }) => {
+      const match = /language-(\w+)/.exec(className || '');
+      const language = match ? match[1] : '';
+      const codeContent = String(children).replace(/\n$/, '');
+      const codeId = `code-${Math.random().toString(36).substr(2, 9)}`;
+
+      if (!inline && language) {
+        return (
+          <div className="code-block-wrapper">
+            <div className="flex items-center justify-between bg-gray-800 px-4 py-2 text-xs text-gray-300">
+              <span>{language}</span>
+              <button
+                onClick={() => {
+                  navigator.clipboard.writeText(codeContent);
+                  setCopiedCode(codeId);
+                  setTimeout(() => setCopiedCode(null), 2000);
+                }}
+                className="copy-button flex items-center space-x-1"
+              >
+                {copiedCode === codeId ? (
+                  <>
+                    <Check className="w-3 h-3" />
+                    <span>Copied!</span>
+                  </>
+                ) : (
+                  <>
+                    <Copy className="w-3 h-3" />
+                    <span>Copy</span>
+                  </>
+                )}
+              </button>
+            </div>
+            <SyntaxHighlighter
+              style={vscDarkPlus}
+              language={language}
+              PreTag="div"
+              className="!mt-0 !rounded-t-none"
+              {...props}
+            >
+              {codeContent}
+            </SyntaxHighlighter>
+          </div>
+        );
+      }
+
+      // Inline code
+      return (
+        <code className={className} {...props}>
+          {children}
+        </code>
+      );
+    },
+
+    // Enhanced tables
+    table: ({ children }) => (
+      <div className="overflow-x-auto my-4 rounded-lg border border-gray-200 shadow-sm">
+        <table className="min-w-full">{children}</table>
+      </div>
+    ),
+
+    // Enhanced headings
+    h1: ({ children }) => (
+      <h1 className="text-2xl font-bold text-gray-900 mt-6 mb-4 pb-2 border-b border-gray-200">
+        {children}
+      </h1>
+    ),
+
+    h2: ({ children }) => (
+      <h2 className="text-xl font-semibold text-gray-900 mt-5 mb-3">
+        {children}
+      </h2>
+    ),
+
+    h3: ({ children }) => (
+      <h3 className="text-lg font-semibold text-gray-900 mt-4 mb-2">
+        {children}
+      </h3>
+    ),
+
+    // Enhanced lists
+    ul: ({ children }) => (
+      <ul className="space-y-2 my-3">{children}</ul>
+    ),
+
+    ol: ({ children }) => (
+      <ol className="space-y-2 my-3">{children}</ol>
+    ),
+
+    li: ({ children }) => (
+      <li className="flex items-start space-x-2 text-gray-700 leading-relaxed">
+        <span className="text-primary-600 mt-1">•</span>
+        <span>{children}</span>
+      </li>
+    ),
+
+    // Enhanced blockquotes
+    blockquote: ({ children }) => (
+      <blockquote className="border-l-4 border-primary-600 pl-4 py-2 my-4 bg-gray-50 italic text-gray-700 rounded-r-lg">
+        {children}
+      </blockquote>
+    ),
+
+    // Enhanced images with lightbox functionality
+    img: ({ src, alt, ...props }) => {
+      const imageId = src || Math.random().toString(36).substr(2, 9);
+      const isExpanded = expandedImages.has(imageId);
+
+      if (isExpanded) {
+        return (
+          <div className="fixed inset-0 bg-black bg-opacity-90 z-50 flex items-center justify-center p-4">
+            <div className="relative max-w-6xl max-h-full">
+              <img
+                src={src}
+                alt={alt}
+                className="max-w-full max-h-full object-contain rounded-lg"
+                {...props}
+              />
+              <button
+                onClick={() => {
+                  const newExpanded = new Set(expandedImages);
+                  newExpanded.delete(imageId);
+                  setExpandedImages(newExpanded);
+                }}
+                className="absolute top-4 right-4 bg-white text-gray-800 p-2 rounded-full hover:bg-gray-100 transition-colors"
+              >
+                <X className="w-6 h-6" />
+              </button>
+            </div>
+          </div>
+        );
+      }
+
+      return (
+        <div className="relative group cursor-pointer my-4" onClick={() => {
+          const newExpanded = new Set(expandedImages);
+          newExpanded.add(imageId);
+          setExpandedImages(newExpanded);
+        }}>
+          <img
+            src={src}
+            alt={alt}
+            className="max-w-full h-auto rounded-lg shadow-md transition-transform duration-200 group-hover:scale-105"
+            {...props}
+          />
+          <div className="absolute inset-0 bg-black bg-opacity-0 group-hover:bg-opacity-10 transition-all duration-200 rounded-lg flex items-center justify-center">
+            <ImageIcon className="w-8 h-8 text-white opacity-0 group-hover:opacity-100 transition-opacity duration-200" />
+          </div>
+          {alt && (
+            <p className="text-sm text-gray-600 mt-2 text-center italic">{alt}</p>
+          )}
+        </div>
+      );
+    },
+
+    // Enhanced links with external icon
+    a: ({ href, children }) => {
+      const isExternal = href && (href.startsWith('http') || href.startsWith('www'));
+      
+      return (
+        <a
+          href={href}
+          target={isExternal ? '_blank' : '_self'}
+          rel={isExternal ? 'noopener noreferrer' : ''}
+          className="text-primary-600 hover:text-primary-800 underline decoration-2 hover:decoration-primary-800 transition-colors duration-200 inline-flex items-center space-x-1"
+        >
+          {children}
+          {isExternal && <ExternalLink className="w-3 h-3" />}
+        </a>
+      );
+    },
+
+    // Task lists
+    input: ({ type, checked, disabled, ...props }) => {
+      if (type === 'checkbox') {
+        return (
+          <input
+            type="checkbox"
+            checked={checked}
+            disabled={disabled}
+            className="mt-1 rounded border-gray-300 text-primary-600 focus:ring-primary-500"
+            {...props}
+          />
+        );
+      }
+      return <input type={type} {...props} />;
+    },
+
+    // Horizontal rules
+    hr: () => (
+      <hr className="my-6 border-gray-300 border-t-2" />
+    ),
+
+    // Paragraphs
+    p: ({ children }) => (
+      <p className="text-gray-700 leading-relaxed my-3">{children}</p>
+    ),
+  };
+
   const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
@@ -178,6 +404,7 @@ function App() {
 
   const clearChat = () => {
     setMessages([]);
+    setExpandedImages(new Set());
   };
 
   const TypingIndicator = () => (
@@ -282,6 +509,12 @@ function App() {
                     <MessageSquare className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                     <p className="text-lg font-medium">Start a conversation</p>
                     <p className="text-sm">Ask questions, and I will answer directly.</p>
+                    <div className="mt-6 text-xs text-gray-400 space-y-1">
+                      <p>• Supports markdown formatting</p>
+                      <p>• Displays tables, images, and code</p>
+                      <p>• Mathematical formulas with LaTeX</p>
+                      <p>• Enhanced lists and links</p>
+                    </div>
                   </div>
                 )}
                 
@@ -293,12 +526,19 @@ function App() {
                     }`}
                   >
                     <div
-                      className={`chat-message ${
+                      className={`chat-message max-w-4xl ${
                         message.type === 'user' ? 'user-message' : 'ai-message'
                       } ${message.isError ? 'bg-red-100' : ''}`}
                     >
-                      <div className="prose prose-sm max-w-none">
-                        <ReactMarkdown>{message.content}</ReactMarkdown>
+                      <div className="enhanced-response">
+                        <ReactMarkdown
+                          remarkPlugins={[remarkGfm]}
+                          rehypePlugins={[rehypeKatex]}
+                          components={components}
+                          className="prose prose-sm max-w-none"
+                        >
+                          {message.content}
+                        </ReactMarkdown>
                       </div>
                       {message.type === 'ai' && message.queryResults && Array.isArray(message.queryResults) && message.queryResults.length > 0 && (
                         <DataTable rows={message.queryResults} />
