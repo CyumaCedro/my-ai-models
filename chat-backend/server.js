@@ -150,7 +150,7 @@ Format your responses clearly with explanations and results.`;
 
   try {
     const payload = {
-      model: model.includes(':') ? model.split(':')[0] : model,
+      model: model,
       messages: [
         { role: 'system', content: systemPrompt },
         { role: 'user', content: prompt }
