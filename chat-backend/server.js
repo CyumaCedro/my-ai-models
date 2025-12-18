@@ -7,6 +7,9 @@ const Joi = require('joi');
 const helmet = require('helmet');
 const morgan = require('morgan');
 require('dotenv').config();
+const http = require('http');
+const https = require('https');
+const { URL } = require('url');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -140,41 +143,65 @@ async function callOllama(prompt, context = '') {
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You are a helpful AI assistant that can analyze database information. 
+  const systemPrompt = `You are an assistant for a MySQL database.
+Your first priority is to answer using the database before any general context.
+Always decide whether the user’s question can be answered from data in the enabled tables.
+If yes, produce a single precise SELECT query that retrieves the needed information.
+Only access tables listed in the provided schema. Never use DROP/DELETE/UPDATE/INSERT/ALTER/CREATE/TRUNCATE/EXEC/EXECUTE.
+Include LIMIT when appropriate. Show the SQL inside a fenced block:
+\`\`\`sql
+SELECT ...
+\`\`\`
+Then summarize the results clearly.
+If the database cannot answer (no relevant tables or empty result), explain why and then provide a general answer if helpful.
+Be concise, correct, and safe.
 ${context}
 ${context ? '\nUse the above schema information to answer questions accurately.\n' : ''}
-When users ask for data, generate SQL queries to retrieve the information. 
-Only access the tables that are available in the schema.
-Always explain your reasoning and show the SQL queries you use.
-Format your responses clearly with explanations and results.`;
+Format responses with the SQL first, followed by the explanation and results.`;
 
-  try {
-    const primaryPayload = {
-      model: model,
-      messages: [
-        { role: 'system', content: systemPrompt },
-        { role: 'user', content: prompt }
-      ],
-      stream: false
-    };
-    try {
-      const response = await axios.post(`${ollamaUrl}/api/chat`, primaryPayload, { timeout: 120000, validateStatus: s => s >= 200 && s < 300 });
-      const content = response.data && response.data.message && response.data.message.content ? response.data.message.content : '';
-      if (content) return content;
-    } catch (e) {}
-    const minimalPayload = {
-      model: model,
-      messages: [
-        { role: 'user', content: prompt }
-      ],
-      stream: false
-    };
-    const response2 = await axios.post(`${ollamaUrl}/api/chat`, minimalPayload, { timeout: 120000, validateStatus: s => s >= 200 && s < 300 });
-    return response2.data && response2.data.message && response2.data.message.content ? response2.data.message.content : '';
-  } catch (error) {
-    console.error('Ollama API error:', error);
-    throw new Error('Failed to get response from Ollama');
-  }
+  const minimalPayload = {
+    model: model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: prompt }
+    ],
+    stream: false
+  };
+  const url = new URL(`${ollamaUrl}/api/chat`);
+  const body = JSON.stringify(minimalPayload);
+  const options = {
+    hostname: url.hostname,
+    port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  };
+  const client = url.protocol === 'https:' ? https : http;
+  const responseData = await new Promise((resolve, reject) => {
+    const req = client.request(options, res => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(data);
+        } else {
+          reject(new Error(`Status ${res.statusCode}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(120000, () => {
+      req.destroy(new Error('Timeout'));
+    });
+    req.end(body);
+  });
+  const parsed = JSON.parse(responseData);
+  return parsed && parsed.message && parsed.message.content ? parsed.message.content : ''
 }
 
 // Validation schemas
