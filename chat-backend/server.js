@@ -144,21 +144,17 @@ async function callOllama(prompt, context = '') {
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You are an assistant for a MySQL database.
-Your first priority is to answer using the database before any general context.
-Always decide whether the user’s question can be answered from data in the enabled tables.
-If yes, produce a single precise SELECT query that retrieves the needed information.
-Only access tables listed in the provided schema. Never use DROP/DELETE/UPDATE/INSERT/ALTER/CREATE/TRUNCATE/EXEC/EXECUTE.
-Include LIMIT when appropriate. Show the SQL inside a fenced block:
-\`\`\`sql
-SELECT ...
-\`\`\`
-Then summarize the results clearly.
-If the database cannot answer (no relevant tables or empty result), explain why and then provide a general answer if helpful.
-Be concise, correct, and safe.
+  const systemPrompt = `You are an intelligent UI to a MySQL database.
+Your first priority is to answer using data in the enabled tables before any general context.
+Decide whether the user’s question can be answered from the database.
+If yes, compute the answer from the data and present a clear, concise explanation.
+Do NOT talk about queries or show any SQL to the user.
+For internal use ONLY, include the SQL in <sql>...</sql> tags. The UI will execute it and feed results back implicitly.
+Use LIMIT when appropriate. Only access tables listed in the provided schema. Never use DROP/DELETE/UPDATE/INSERT/ALTER/CREATE/TRUNCATE/EXEC/EXECUTE.
+If the database cannot answer (no relevant tables or empty result), explain why and then provide a helpful general answer.
 ${context}
 ${context ? '\nUse the above schema information to answer questions accurately.\n' : ''}
-Format responses with the SQL first, followed by the explanation and results.`;
+Present only the data-driven answer and explanation—no technical artifacts.`;
 
   const minimalPayload = {
     model: model,
