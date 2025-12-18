@@ -149,7 +149,7 @@ Always explain your reasoning and show the SQL queries you use.
 Format your responses clearly with explanations and results.`;
 
   try {
-    const payload = {
+    const primaryPayload = {
       model: model,
       messages: [
         { role: 'system', content: systemPrompt },
@@ -157,8 +157,20 @@ Format your responses clearly with explanations and results.`;
       ],
       stream: false
     };
-    const response = await axios.post(`${ollamaUrl}/api/chat`, payload, { timeout: 30000 });
-    return (response.data && response.data.message && response.data.message.content) ? response.data.message.content : '';
+    try {
+      const response = await axios.post(`${ollamaUrl}/api/chat`, primaryPayload, { timeout: 120000, validateStatus: s => s >= 200 && s < 300 });
+      const content = response.data && response.data.message && response.data.message.content ? response.data.message.content : '';
+      if (content) return content;
+    } catch (e) {}
+    const minimalPayload = {
+      model: model,
+      messages: [
+        { role: 'user', content: prompt }
+      ],
+      stream: false
+    };
+    const response2 = await axios.post(`${ollamaUrl}/api/chat`, minimalPayload, { timeout: 120000, validateStatus: s => s >= 200 && s < 300 });
+    return response2.data && response2.data.message && response2.data.message.content ? response2.data.message.content : '';
   } catch (error) {
     console.error('Ollama API error:', error);
     throw new Error('Failed to get response from Ollama');

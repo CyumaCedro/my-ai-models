@@ -7,22 +7,35 @@ services:
     volumes:
       - ollama_data:/root/.ollama
     environment:
-      # Parallel processing
-      - OLLAMA_NUM_PARALLEL=2
-      - OLLAMA_MAX_LOADED_MODELS=2
-      - OLLAMA_KEEP_ALIVE=5m
+      # CRITICAL: Enable GPU acceleration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      
+      # Parallel processing - increased for better throughput
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_KEEP_ALIVE=10m
       - OLLAMA_ORIGINS=*
       
-      # GPU memory management
-      - OLLAMA_MAX_VRAM=28000000000
-      - OLLAMA_GPU_OVERHEAD=2000000000
+      # GPU memory management - optimized for 30GB GPU
+      - OLLAMA_MAX_VRAM=26000000000      # Use 26GB (leave 4GB overhead)
+      - OLLAMA_GPU_OVERHEAD=1000000000   # Reduced overhead
       - OLLAMA_NUM_GPU=1
-      - OLLAMA_NUM_THREAD=8
       
-      # TOKEN SETTINGS - adjust based on your needs
-      - OLLAMA_NUM_CTX=10000              # Default context window (8K tokens)
-      - OLLAMA_NUM_BATCH=1024            # Processing batch size
-      - OLLAMA_NUM_PREDICT=2048           # Default max output tokens
+      # CPU threads - match your CPU cores
+      - OLLAMA_NUM_THREAD=16             # Increase based on your CPU
+      
+      # TOKEN SETTINGS - optimized for performance
+      - OLLAMA_NUM_CTX=4096              # Reduced context for faster processing
+      - OLLAMA_NUM_BATCH=512             # Optimized batch size
+      - OLLAMA_NUM_PREDICT=2048
+      
+      # PERFORMANCE TUNING
+      - OLLAMA_FLASH_ATTENTION=1         # Enable flash attention
+      - OLLAMA_KV_CACHE_TYPE=f16         # Use FP16 for KV cache (faster)
+      - OLLAMA_USE_MMAP=false            # Disable mmap for better GPU utilization
+      - OLLAMA_USE_MLOCK=true            # Keep model in memory
+      
     healthcheck:
       test: ["CMD", "sh", "-c", "curl -s http://localhost:11434/api/tags >/dev/null 2>&1 || ollama list >/dev/null 2>&1"]
       interval: 5s
@@ -37,7 +50,14 @@ services:
               count: 1
               capabilities: [gpu]
         limits:
-          memory: 8G
+          memory: 16G                    # Increased memory limit
+    # CRITICAL: Use host network for better performance (optional)
+    # network_mode: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ipc: host                            # Shared memory for better GPU communication
 
   ollama-webui:
     image: ghcr.io/open-webui/open-webui:main
@@ -47,6 +67,7 @@ services:
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
       - WEBUI_AUTH=true
+      - WEBUI_SECRET_KEY=your-secret-key-here
     volumes:
       - ollama_webui_data:/app/backend/data
     depends_on:
@@ -85,9 +106,11 @@ services:
       -c "
       echo 'Waiting for Ollama to become ready...';
       until ollama list >/dev/null 2>&1; do echo 'Still waiting...'; sleep 2; done;
-      echo 'Pulling deepseek-coder-v2 model...';
+      echo 'Pulling optimized model...';
       ollama pull deepseek-coder-v2:16b-lite-instruct-q4_K_M;
-      echo 'Model pulled successfully!';
+      echo 'Preloading model into GPU memory...';
+      curl -X POST http://ollama:11434/api/generate -d '{\"model\":\"deepseek-coder-v2:16b-lite-instruct-q4_K_M\",\"prompt\":\"test\",\"stream\":false}' || true;
+      echo 'Model ready!';
       "
     restart: "no"
 
@@ -131,6 +154,9 @@ services:
       - MYSQL_PASSWORD=chatpass
       - OLLAMA_URL=http://ollama:11434
       - OLLAMA_MODEL=deepseek-coder-v2:16b-lite-instruct-q4_K_M
+      # Backend performance
+      - OLLAMA_REQUEST_TIMEOUT=300000
+      - OLLAMA_KEEP_ALIVE=600
     volumes:
       - ./chat-backend:/app
       - /app/node_modules
