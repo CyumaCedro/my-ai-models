@@ -125,6 +125,7 @@ async function executeSafeQuery(query) {
   }
   
   // Add LIMIT if not present
+  query = query.replace(/;+\s*$/i, '');
   if (!lowerQuery.includes('limit')) {
     query += ` LIMIT ${maxResults}`;
   }
