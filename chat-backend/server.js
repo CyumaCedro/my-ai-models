@@ -144,17 +144,15 @@ async function callOllama(prompt, context = '') {
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You are an intelligent UI to a MySQL database.
-Your first priority is to answer using data in the enabled tables before any general context.
-Decide whether the user’s question can be answered from the database.
-If yes, compute the answer from the data and present a clear, concise explanation.
-Do NOT talk about queries or show any SQL to the user.
-For internal use ONLY, include the SQL in <sql>...</sql> tags. The UI will execute it and feed results back implicitly.
+  const systemPrompt = `You answer with a direct result only.
+Always prefer data from enabled tables before any general knowledge.
+Never mention databases, tables, queries, or SQL.
+For internal use ONLY, put the SQL needed inside <sql>...</sql> tags. Do not echo it in the visible answer.
+Do not use code fences or show technical artifacts.
 Use LIMIT when appropriate. Only access tables listed in the provided schema. Never use DROP/DELETE/UPDATE/INSERT/ALTER/CREATE/TRUNCATE/EXEC/EXECUTE.
-If the database cannot answer (no relevant tables or empty result), explain why and then provide a helpful general answer.
+If the database cannot answer, provide a brief direct answer from general knowledge with no explanations.
 ${context}
-${context ? '\nUse the above schema information to answer questions accurately.\n' : ''}
-Present only the data-driven answer and explanation—no technical artifacts.`;
+${context ? '\nUse the above schema information silently.\n' : ''}`;
 
   const minimalPayload = {
     model: model,
@@ -199,6 +197,68 @@ Present only the data-driven answer and explanation—no technical artifacts.`;
   });
   const parsed = JSON.parse(responseData);
   return parsed && parsed.message && parsed.message.content ? parsed.message.content : ''
+}
+
+function stripTechnicalContent(text) {
+  if (!text) return '';
+  let t = text;
+  t = t.replace(/<sql>[\s\S]*?<\/sql>/gi, '');
+  t = t.replace(/```[\s\S]*?```/g, '');
+  t = t.replace(/`[\s\S]*?`/g, '');
+  return t.trim();
+}
+
+async function summarizeWithData(question, dataJson) {
+  const settings = await getSettings();
+  const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
+  const model = settings.ollama_model || 'deepseek-coder-v2';
+  const systemPrompt = `You respond with a direct answer only.
+Do not mention databases, queries, or SQL.
+No code fences. No explanations. No preambles.
+Use the provided data to answer succinctly.`;
+  const minimalPayload = {
+    model: model,
+    messages: [
+      { role: 'system', content: systemPrompt },
+      { role: 'user', content: `Question: ${question}\nData:\n${dataJson}` }
+    ],
+    stream: false
+  };
+  const url = new URL(`${ollamaUrl}/api/chat`);
+  const body = JSON.stringify(minimalPayload);
+  const options = {
+    hostname: url.hostname,
+    port: url.port ? parseInt(url.port, 10) : (url.protocol === 'https:' ? 443 : 80),
+    path: url.pathname,
+    method: 'POST',
+    headers: {
+      'Content-Type': 'application/json',
+      'Accept': 'application/json',
+      'Content-Length': Buffer.byteLength(body)
+    }
+  };
+  const client = url.protocol === 'https:' ? https : http;
+  const responseData = await new Promise((resolve, reject) => {
+    const req = client.request(options, res => {
+      let data = '';
+      res.setEncoding('utf8');
+      res.on('data', chunk => { data += chunk; });
+      res.on('end', () => {
+        if (res.statusCode && res.statusCode >= 200 && res.statusCode < 300) {
+          resolve(data);
+        } else {
+          reject(new Error(`Status ${res.statusCode}`));
+        }
+      });
+    });
+    req.on('error', reject);
+    req.setTimeout(120000, () => {
+      req.destroy(new Error('Timeout'));
+    });
+    req.end(body);
+  });
+  const parsed = JSON.parse(responseData);
+  return parsed && parsed.message && parsed.message.content ? stripTechnicalContent(parsed.message.content) : ''
 }
 
 // Validation schemas
@@ -295,12 +355,27 @@ app.post('/api/chat', async (req, res) => {
     const dataKeywords = ['show', 'get', 'list', 'find', 'search', 'count', 'how many', 'what', 'when', 'where'];
     const isDataRequest = dataKeywords.some(keyword => message.toLowerCase().includes(keyword));
     
-    let aiResponse = await callOllama(message, context);
+    let aiResponse;
     let queryResults = null;
+    try {
+      aiResponse = await callOllama(message, context);
+    } catch (ollamaError) {
+      const fallback = 'Try again later.';
+      await db.execute(
+        'INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) VALUES (?, ?, ?, ?)',
+        [sessionId, message, fallback, '']
+      );
+      return res.json({
+        success: true,
+        response: fallback,
+        sessionId
+      });
+    }
     
     // Try to extract and execute SQL queries from the response
     if (isDataRequest) {
-      const sqlMatch = aiResponse.match(/```sql\n([\s\S]*?)\n```/i) || 
+      const sqlMatch = aiResponse.match(/<sql>([\s\S]*?)<\/sql>/i) ||
+                       aiResponse.match(/```sql\n([\s\S]*?)\n```/i) || 
                        aiResponse.match(/SELECT[\s\S]*?(?=\n\n|\n[A-Z]|\n#|$)/i);
       
       if (sqlMatch) {
@@ -319,14 +394,20 @@ app.post('/api/chat', async (req, res) => {
               }
             });
           }
-          
-          // Add results to AI response
-          aiResponse += '\n\nQuery Results:\n```\n' + JSON.stringify(queryResults, null, 2) + '\n```';
+          const dataJson = JSON.stringify(queryResults, null, 2);
+          try {
+            const summarized = await summarizeWithData(message, dataJson);
+            aiResponse = summarized || stripTechnicalContent(aiResponse);
+          } catch (summErr) {
+            aiResponse = stripTechnicalContent(aiResponse);
+          }
         } catch (queryError) {
-          aiResponse += `\n\n⚠️ Query Error: ${queryError.message}`;
+          aiResponse = stripTechnicalContent(aiResponse);
         }
       }
     }
+    
+    aiResponse = stripTechnicalContent(aiResponse);
     
     // Save chat history
     await db.execute(
@@ -338,7 +419,6 @@ app.post('/api/chat', async (req, res) => {
       success: true,
       response: aiResponse,
       sessionId,
-      queryResults,
       tablesAccessed
     });
     

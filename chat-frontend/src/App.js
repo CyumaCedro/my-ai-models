@@ -245,7 +245,7 @@ function App() {
                   <div className="text-center text-gray-500 mt-8">
                     <MessageSquare className="w-12 h-12 mx-auto mb-4 text-gray-300" />
                     <p className="text-lg font-medium">Start a conversation</p>
-                    <p className="text-sm">Ask questions about your database, and I'll help you analyze the data!</p>
+                    <p className="text-sm">Ask questions, and I will answer directly.</p>
                   </div>
                 )}
                 
@@ -264,11 +264,6 @@ function App() {
                       <div className="prose prose-sm max-w-none">
                         <ReactMarkdown>{message.content}</ReactMarkdown>
                       </div>
-                      {message.tablesAccessed && message.tablesAccessed.length > 0 && (
-                        <div className="mt-2 text-xs text-gray-600">
-                          <strong>Tables accessed:</strong> {message.tablesAccessed.join(', ')}
-                        </div>
-                      )}
                       <div className="mt-2 text-xs text-gray-400">
                         {format(message.timestamp, 'HH:mm:ss')}
                       </div>
@@ -293,7 +288,7 @@ function App() {
                     value={inputMessage}
                     onChange={(e) => setInputMessage(e.target.value)}
                     onKeyPress={handleKeyPress}
-                    placeholder="Ask about your database... (e.g., 'Show me all customers' or 'How many orders are pending?')"
+                    placeholder="Ask anything... (e.g., 'Show me all customers' or 'How many orders are pending?')"
                     className="chat-input resize-none"
                     rows={2}
                     disabled={isLoading}
