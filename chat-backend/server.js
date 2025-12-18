@@ -18,7 +18,44 @@ const PORT = process.env.PORT || 8000;
 app.use(helmet());
 app.use(morgan('combined'));
 app.use(cors());
-app.use(express.json());
+
+// Enhanced JSON parsing with error handling
+app.use(express.json({ 
+  limit: '10mb',
+  strict: true,
+  type: 'application/json'
+}));
+
+// Catch JSON parsing errors
+app.use((err, req, res, next) => {
+  if (err instanceof SyntaxError && err.status === 400 && 'body' in err) {
+    return res.status(400).json({
+      success: false,
+      error: 'Invalid JSON in request body',
+      details: err.message
+    });
+  }
+  next();
+});
+
+// Response helper function to ensure valid JSON
+function sendJsonResponse(res, statusCode, data) {
+  try {
+    // Validate that data can be stringified
+    const jsonString = JSON.stringify(data);
+    
+    // Set proper headers
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.status(statusCode);
+    res.send(jsonString);
+  } catch (error) {
+    console.error('JSON serialization error:', error);
+    res.status(500).json({
+      success: false,
+      error: 'Internal server error: Unable to serialize response'
+    });
+  }
+}
 
 // Database connection pool for better performance
 let pool;
@@ -231,26 +268,27 @@ async function callOllama(prompt, context = '', conversationHistory = []) {
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You are a helpful data assistant. Follow these rules strictly:
+  const systemPrompt = `You are a helpful assistant that provides intelligent insights from data. Follow these rules strictly:
 
-1. ANSWER FORMAT: Provide clear, natural language answers. Be conversational and helpful.
-2. SQL GENERATION: When you need to query data, include SQL in <sql>...</sql> tags. This will be executed automatically.
+1. ANSWER FORMAT: Provide clear, natural language answers about the actual data. Be conversational and helpful.
+2. SQL GENERATION: When you need to retrieve data, include SQL in <sql>...</sql> tags. This will be executed automatically.
 3. QUERY BEST PRACTICES:
-   - Use JOINs when data spans multiple tables
+   - Use JOINs when data spans multiple sources
    - Use aggregate functions (COUNT, SUM, AVG) for statistics
    - Use GROUP BY for categorized results
    - Use ORDER BY to sort results logically
    - Use WHERE clauses to filter data precisely
    - ALWAYS use LIMIT for performance
-4. TABLE ACCESS: Only query tables listed in the schema below
-5. NO TECHNICAL JARGON: Never mention "database", "SQL", "query", or technical terms in your visible answer
+4. DATA FOCUS: Talk about what the data shows, not about tables, fields, or technical details
+5. NO TECHNICAL JARGON: Never mention "database", "SQL", "query", "table", "field", "column", or technical terms
 6. FORBIDDEN OPERATIONS: Never use DROP, DELETE, UPDATE, INSERT, ALTER, CREATE, TRUNCATE, EXEC, EXECUTE
-7. DATA PRIORITY: Always prefer actual database data over general knowledge
+7. DATA PRIORITY: Always prefer actual retrieved data over general knowledge
 8. CONTEXT AWARENESS: Consider previous conversation context when answering
+9. NATURAL RESPONSES: Answer as if you're a smart assistant presenting useful information, not a technical system
 
 ${context}
 
-Available Schema:
+Available Data Sources:
 ${context}`;
 
   const messages = [
@@ -338,18 +376,19 @@ async function summarizeWithData(question, dataJson, context = '') {
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You are a data analyst. Provide clear, insightful answers based on the data provided.
+  const systemPrompt = `You are a helpful analyst providing insights from data. Focus on what the data reveals, not technical details.
 
 RULES:
-- Analyze the data and answer the user's question directly
-- Use natural language - no technical jargon
-- If data shows patterns or insights, mention them
-- Be concise but complete
-- Never mention "database", "query", or "SQL"
-- Format numbers with appropriate units
-- Highlight key findings
+- Analyze the information and answer the user's question directly
+- Use natural, conversational language - absolutely no technical jargon
+- Talk about what the data shows, patterns, or trends you notice
+- Be concise but complete and helpful
+- Never mention "database", "SQL", "query", "table", "field", "column" or any technical terms
+- Format numbers with appropriate units for easy understanding
+- Highlight the most important insights or patterns
+- Answer as if you're presenting useful information to someone interested in the results
 
-${context ? 'Additional context: ' + context : ''}`;
+${context ? 'Context: ' + context : ''}`;
 
   const userPrompt = `Question: ${question}
 
@@ -570,15 +609,15 @@ const settingsUpdateSchema = Joi.object({
 
 // Routes
 app.get('/health', (req, res) => {
-  res.json({ status: 'healthy', timestamp: new Date().toISOString() });
+  sendJsonResponse(res, 200, { status: 'healthy', timestamp: new Date().toISOString() });
 });
 
 app.get('/api/settings', async (req, res) => {
   try {
     const settings = await getSettings();
-    res.json({ success: true, settings });
+    sendJsonResponse(res, 200, { success: true, settings });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendJsonResponse(res, 500, { success: false, error: error.message });
   }
 });
 
@@ -586,7 +625,7 @@ app.put('/api/settings', async (req, res) => {
   try {
     const { error, value } = settingsUpdateSchema.validate(req.body);
     if (error) {
-      return res.status(400).json({ success: false, error: error.details[0].message });
+      return sendJsonResponse(res, 400, { success: false, error: error.details[0].message });
     }
 
     const { settings } = value;
@@ -604,10 +643,10 @@ app.put('/api/settings', async (req, res) => {
     settingsCache = {};
     cacheTimestamp = 0;
     
-    res.json({ success: true, message: 'Settings updated successfully' });
+    sendJsonResponse(res, 200, { success: true, message: 'Settings updated successfully' });
   } catch (error) {
     console.error('Settings update error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    sendJsonResponse(res, 500, { success: false, error: error.message });
   }
 });
 
@@ -636,9 +675,9 @@ app.get('/api/tables', async (req, res) => {
       });
     }
     
-    res.json({ success: true, tables });
+    sendJsonResponse(res, 200, { success: true, tables });
   } catch (error) {
-    res.status(500).json({ success: false, error: error.message });
+    sendJsonResponse(res, 500, { success: false, error: error.message });
   }
 });
 
@@ -646,7 +685,7 @@ app.post('/api/chat', async (req, res) => {
   try {
     const { error, value } = chatRequestSchema.validate(req.body);
     if (error) {
-      return res.status(400).json({ success: false, error: error.details[0].message });
+      return sendJsonResponse(res, 400, { success: false, error: error.details[0].message });
     }
 
     const { message, sessionId } = value;
@@ -689,7 +728,7 @@ app.post('/api/chat', async (req, res) => {
          VALUES (?, ?, ?, ?)`,
         [sessionId, message, fallback, '']
       );
-      return res.json({
+      return sendJsonResponse(res, 200, {
         success: true,
         response: fallback,
         sessionId
@@ -824,7 +863,7 @@ app.post('/api/chat', async (req, res) => {
       [sessionId, message, aiResponse, tablesAccessed.join(',')]
     );
     
-    res.json({
+    sendJsonResponse(res, 200, {
       success: true,
       response: aiResponse,
       sessionId,
@@ -834,7 +873,7 @@ app.post('/api/chat', async (req, res) => {
     
   } catch (error) {
     console.error('Chat error:', error);
-    res.status(500).json({ 
+    sendJsonResponse(res, 500, { 
       success: false, 
       error: 'An error occurred while processing your request. Please try again.' 
     });
@@ -854,10 +893,10 @@ app.get('/api/history/:sessionId', async (req, res) => {
        LIMIT ?`,
       [sessionId, limit]
     );
-    res.json({ success: true, history: rows });
+    sendJsonResponse(res, 200, { success: true, history: rows });
   } catch (error) {
     console.error('History error:', error);
-    res.status(500).json({ success: false, error: error.message });
+    sendJsonResponse(res, 500, { success: false, error: error.message });
   }
 });
 
