@@ -1,0 +1,111 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  body {
+    font-family: 'Inter', system-ui, -apple-system, BlinkMacSystemFont, 'Segoe UI', Roboto, sans-serif;
+  }
+}
+
+@layer components {
+  .chat-message {
+    @apply max-w-3xl mx-auto p-4 rounded-lg;
+  }
+  
+  .user-message {
+    @apply bg-primary-100 ml-auto mr-0;
+  }
+  
+  .ai-message {
+    @apply bg-gray-100 mr-auto ml-0;
+  }
+  
+  .typing-indicator {
+    @apply flex space-x-1;
+  }
+  
+  .typing-dot {
+    @apply w-2 h-2 bg-gray-400 rounded-full animate-pulse;
+  }
+  
+  .settings-panel {
+    @apply bg-white rounded-lg shadow-lg p-6 border border-gray-200;
+  }
+  
+  .chat-input {
+    @apply w-full p-3 border border-gray-300 rounded-lg focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-transparent;
+  }
+  
+  .btn-primary {
+    @apply bg-primary-600 text-white px-4 py-2 rounded-lg hover:bg-primary-700 transition-colors duration-200 font-medium;
+  }
+  
+  .btn-secondary {
+    @apply bg-gray-200 text-gray-800 px-4 py-2 rounded-lg hover:bg-gray-300 transition-colors duration-200 font-medium;
+  }
+}
+
+/* Scrollbar styling */
+::-webkit-scrollbar {
+  width: 6px;
+}
+
+::-webkit-scrollbar-track {
+  background: #f1f1f1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb {
+  background: #c1c1c1;
+  border-radius: 10px;
+}
+
+::-webkit-scrollbar-thumb:hover {
+  background: #a8a8a8;
+}
+
+/* Markdown content styling */
+.prose {
+  @apply max-w-none;
+}
+
+.prose pre {
+  @apply bg-gray-900 text-gray-100 p-4 rounded-lg overflow-x-auto;
+}
+
+.prose code {
+  @apply bg-gray-100 text-gray-800 px-1 py-0.5 rounded text-sm;
+}
+
+.prose pre code {
+  @apply bg-transparent text-inherit p-0;
+}
+
+.prose table {
+  @apply border-collapse border border-gray-300;
+}
+
+.prose th, .prose td {
+  @apply border border-gray-300 px-4 py-2;
+}
+
+.prose th {
+  @apply bg-gray-50 font-semibold;
+}
+
+/* Animation for new messages */
+@keyframes slideIn {
+  from {
+    opacity: 0;
+    transform: translateY(10px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+
+.message-enter {
+  animation: slideIn 0.3s ease-out;
+}
