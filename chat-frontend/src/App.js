@@ -373,8 +373,8 @@ function App() {
                 <label className="flex items-center space-x-2">
                   <input
                     type="checkbox"
-                    checked={tempSettings.enable_schema_info === 'true'}
-                    onChange={(e) => setTempSettings({ ...tempSettings, enable_schema_info: e.target.value.toString() })}
+                    checked={(tempSettings.enable_schema_info ?? 'true') === 'true'}
+                    onChange={(e) => setTempSettings({ ...tempSettings, enable_schema_info: e.target.checked ? 'true' : 'false' })}
                     className="rounded border-gray-300 text-primary-600 focus:ring-primary-500"
                   />
                   <span className="text-sm font-medium text-gray-700">

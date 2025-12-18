@@ -25,7 +25,11 @@ services:
       - OLLAMA_NUM_CTX=32768              # Default context window (8K tokens)
       - OLLAMA_NUM_BATCH=1024            # Processing batch size
       - OLLAMA_NUM_PREDICT=2048           # Default max output tokens
-      
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -s http://localhost:11434/api/tags >/dev/null 2>&1 || ollama list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
     restart: unless-stopped
     deploy:
       resources:
@@ -44,11 +48,12 @@ services:
       - "3000:8080"
     environment:
       - OLLAMA_BASE_URL=http://ollama:11434
-      - WEBUI_AUTH=true
+      - WEBUI_AUTH=false
     volumes:
       - ollama_webui_data:/app/backend/data
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -73,14 +78,15 @@ services:
     image: ollama/ollama:latest
     container_name: ollama-init
     depends_on:
-      - ollama
+      ollama:
+        condition: service_healthy
     environment:
       - OLLAMA_HOST=http://ollama:11434
     entrypoint: /bin/sh
     command: >
       -c "
-      echo 'Waiting for Ollama to start...';
-      sleep 15;
+      echo 'Waiting for Ollama to become ready...';
+      until ollama list >/dev/null 2>&1; do echo 'Still waiting...'; sleep 2; done;
       echo 'Pulling deepseek-coder-v2 model...';
       ollama pull deepseek-coder-v2:16b-lite-instruct-q4_K_M;
       echo 'Model pulled successfully!';
@@ -100,6 +106,11 @@ services:
     volumes:
       - mysql_data:/var/lib/mysql
       - ./db/init:/docker-entrypoint-initdb.d
+    healthcheck:
+      test: ["CMD-SHELL", "mysqladmin ping -h localhost -uroot -prootpassword || exit 1"]
+      interval: 5s
+      timeout: 5s
+      retries: 20
     restart: unless-stopped
     deploy:
       resources:
@@ -126,8 +137,10 @@ services:
       - ./chat-backend:/app
       - /app/node_modules
     depends_on:
-      - mysql
-      - ollama
+      mysql:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
     restart: unless-stopped
     deploy:
       resources:
@@ -147,7 +160,8 @@ services:
       - ./chat-frontend:/app
       - /app/node_modules
     depends_on:
-      - chat-backend
+      chat-backend:
+        condition: service_started
     restart: unless-stopped
     deploy:
       resources:
