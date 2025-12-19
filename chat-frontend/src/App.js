@@ -382,10 +382,25 @@ function App() {
       }
     } catch (error) {
       console.error('Chat error:', error);
+      let friendlyMessage = "I'm having trouble processing your request right now. Please try again.";
+      
+      // Provide more specific friendly messages for common errors
+      if (error.message.includes('fetch')) {
+        friendlyMessage = "I can't connect to the server right now. Please check your connection and try again.";
+      } else if (error.message.includes('timeout')) {
+        friendlyMessage = "The request is taking longer than expected. Please try a simpler question.";
+      } else if (error.message.includes('database') || error.message.includes('query')) {
+        friendlyMessage = "I'm having trouble accessing the data right now. Please try again in a moment.";
+      } else if (error.message.includes('Ollama')) {
+        friendlyMessage = "My AI assistant is temporarily unavailable. Please try again later.";
+      } else if (error.message.includes('JSON')) {
+        friendlyMessage = "I received an unexpected response. Please try your question again.";
+      }
+      
       const errorMessage = {
         id: Date.now() + 1,
         type: 'ai',
-        content: `Error: ${error.message}`,
+        content: friendlyMessage,
         timestamp: new Date(),
         isError: true,
       };
