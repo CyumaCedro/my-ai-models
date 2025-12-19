@@ -274,6 +274,7 @@ function App() {
   const [settings, setSettings] = useState({});
   const [tables, setTables] = useState([]);
   const [tempSettings, setTempSettings] = useState({});
+  const [databaseInfo, setDatabaseInfo] = useState({});
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -290,6 +291,7 @@ function App() {
     setSessionId(newSessionId);
     loadSettings();
     loadTables();
+    loadDatabaseInfo();
   }, []);
 
   const loadSettings = async () => {
@@ -314,6 +316,17 @@ function App() {
       }
     } catch (error) {
       console.error('Failed to load tables:', error);
+    }
+  };
+
+  const loadDatabaseInfo = async () => {
+    try {
+      const response = await fetch('/health');
+      const data = await response.json();
+      setDatabaseInfo(data);
+    } catch (error) {
+      console.error('Failed to load database info:', error);
+      setDatabaseInfo({ status: 'unknown', databaseType: 'Unknown' });
     }
   };
 
@@ -443,7 +456,7 @@ function App() {
               <MessageSquare className="w-8 h-8 text-primary-600" />
               <div>
                 <h1 className="text-xl font-bold text-gray-900">AI Database Chat</h1>
-                <p className="text-sm text-gray-500">Powered by Ollama & MySQL</p>
+                <p className="text-sm text-gray-500">Powered by Ollama & {databaseInfo.databaseType || 'Database'}</p>
               </div>
             </div>
             <div className="flex items-center space-x-2">
