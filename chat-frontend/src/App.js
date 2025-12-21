@@ -493,9 +493,12 @@ function App() {
               </div>
               <div className="space-y-2">
                 {tables.map((table) => (
-                  <div key={table.name} className="flex justify-between items-center text-sm">
-                    <span className="font-medium text-gray-700">{table.name}</span>
-                    <span className="text-gray-500">{table.count} rows</span>
+                  <div key={table.name} className={`flex justify-between items-center text-sm p-1 rounded ${table.enabled ? 'bg-primary-50' : ''}`}>
+                    <span className={`font-medium ${table.enabled ? 'text-primary-700' : 'text-gray-500'}`}>
+                      {table.name}
+                      {table.enabled && <span className="ml-2 text-[10px] bg-primary-100 text-primary-600 px-1 rounded">Enabled</span>}
+                    </span>
+                    <span className="text-gray-400 text-xs">{table.count} rows</span>
                   </div>
                 ))}
               </div>
@@ -630,16 +633,37 @@ function App() {
 
             <div className="space-y-4">
               <div>
-                <label className="block text-sm font-medium text-gray-700 mb-2">
-                  Enabled Tables (comma-separated)
+                <label className="block text-sm font-medium text-gray-700 mb-3">
+                  Database Tables (Select to enable for AI)
                 </label>
-                <input
-                  type="text"
-                  value={tempSettings.enabled_tables || ''}
-                  onChange={(e) => setTempSettings({ ...tempSettings, enabled_tables: e.target.value })}
-                  className="chat-input"
-                  placeholder="customers,orders,products"
-                />
+                <div className="grid grid-cols-1 sm:grid-cols-2 gap-3 max-h-48 overflow-y-auto p-3 border border-gray-200 rounded-lg bg-gray-50">
+                  {tables.map((table) => {
+                    const isEnabled = (tempSettings.enabled_tables || '').split(',').map(t => t.trim().toLowerCase()).includes(table.name.toLowerCase());
+                    return (
+                      <label key={table.name} className={`flex items-center space-x-3 p-2 rounded-md border transition-all cursor-pointer ${isEnabled ? 'bg-primary-50 border-primary-200 shadow-sm' : 'bg-white border-gray-100 hover:border-gray-300'}`}>
+                        <input
+                          type="checkbox"
+                          checked={isEnabled}
+                          onChange={(e) => {
+                            const currentEnabled = (tempSettings.enabled_tables || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+                            let nextEnabled;
+                            if (e.target.checked) {
+                              nextEnabled = [...new Set([...currentEnabled, table.name.toLowerCase()])];
+                            } else {
+                              nextEnabled = currentEnabled.filter(t => t !== table.name.toLowerCase());
+                            }
+                            setTempSettings({ ...tempSettings, enabled_tables: nextEnabled.join(',') });
+                          }}
+                          className="rounded border-gray-300 text-primary-600 focus:ring-primary-500 w-4 h-4"
+                        />
+                        <div className="flex flex-col">
+                          <span className={`text-sm font-medium ${isEnabled ? 'text-primary-900' : 'text-gray-700'}`}>{table.name}</span>
+                          <span className="text-[10px] text-gray-400">{table.count} records</span>
+                        </div>
+                      </label>
+                    );
+                  })}
+                </div>
               </div>
 
               <div>

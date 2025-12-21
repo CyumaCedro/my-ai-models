@@ -100,6 +100,16 @@ class LangChainManager {
   isInitialized() {
     return this.initialized;
   }
+
+  /**
+   * Reset LangChain to force re-initialization with new settings
+   */
+  async reset() {
+    this.initialized = false;
+    this.db = null;
+    this.executor = null;
+    console.log("LangChain manager reset");
+  }
 }
 
 module.exports = LangChainManager;

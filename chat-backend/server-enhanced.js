@@ -13,6 +13,7 @@ const { URL } = require('url');
 // Import database manager
 const DatabaseManager = require('./database/DatabaseManager');
 const LangChainManager = require('./database/LangChainManager');
+const systemDb = require('./database/SystemDatabase');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
@@ -64,7 +65,7 @@ function sendJsonResponse(res, statusCode, data) {
   }
 }
 
-// Enhanced settings management with database abstraction
+// Enhanced settings management with SQLite system database
 let settingsCache = {};
 let cacheTimestamp = 0;
 const CACHE_DURATION = 60000; // 1 minute
@@ -76,11 +77,7 @@ async function getSettings() {
   }
 
   try {
-    const rows = await dbManager.getCurrentAdapter().executeQuery('SELECT setting_name, setting_value FROM chat_settings');
-    settingsCache = {};
-    rows.forEach(row => {
-      settingsCache[row.setting_name] = row.setting_value;
-    });
+    settingsCache = await systemDb.getSettings();
     cacheTimestamp = now;
     return settingsCache;
   } catch (error) {
@@ -333,26 +330,10 @@ Keep responses natural and conversational. No technical jargon unless specifical
   return stripTechnicalContent(parsed?.message?.content || '');
 }
 
-// Enhanced conversation history retrieval
+// Enhanced conversation history retrieval using system database
 async function getConversationHistory(sessionId, limit = 3) {
   try {
-    const rows = await dbManager.getCurrentAdapter().executeQuery(
-      `SELECT user_message, ai_response 
-       FROM chat_history 
-       WHERE session_id = ? 
-       ORDER BY timestamp DESC 
-       LIMIT ?`,
-      [sessionId, limit]
-    );
-    
-    // Convert to message format for Ollama
-    const messages = [];
-    for (const row of rows.reverse()) {
-      messages.push({ role: 'user', content: row.user_message });
-      messages.push({ role: 'assistant', content: row.ai_response });
-    }
-    
-    return messages;
+    return await systemDb.getConversationHistoryForAI(sessionId, limit);
   } catch (error) {
     console.error('Error fetching conversation history:', error);
     return [];
@@ -407,17 +388,13 @@ app.put('/api/settings', async (req, res) => {
     const { settings } = value;
     
     for (const [key, val] of Object.entries(settings)) {
-      await dbManager.getCurrentAdapter().executeQuery(
-        `INSERT INTO chat_settings (setting_name, setting_value) 
-         VALUES (?, ?) 
-         ON DUPLICATE KEY UPDATE setting_value = ?, updated_at = CURRENT_TIMESTAMP`,
-        [key, val, val]
-      );
+      await systemDb.updateSetting(key, val);
     }
     
-    // Clear cache
+    // Clear cache and reset LangChain
     settingsCache = {};
     cacheTimestamp = 0;
+    await langChainManager.reset();
     
     sendJsonResponse(res, 200, { success: true, message: 'Settings updated successfully' });
   } catch (error) {
@@ -429,17 +406,17 @@ app.put('/api/settings', async (req, res) => {
 app.get('/api/tables', async (req, res) => {
   try {
     const settings = await getSettings();
-    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
+    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim().toLowerCase()) : [];
     
+    const allTables = await dbManager.getTableList();
     const tables = [];
-    for (const table of enabledTables) {
-      const name = table.trim().replace(/[^a-zA-Z0-9_]/g, '');
-      const count = await dbManager.getTableCount(name);
-      
+    
+    for (const table of allTables) {
+      const count = await dbManager.getTableCount(table.name);
       tables.push({
-        name: name,
+        ...table,
         count: count,
-        description: ''
+        enabled: enabledTables.includes(table.name.toLowerCase())
       });
     }
     
@@ -521,11 +498,7 @@ app.post('/api/chat', async (req, res) => {
     } catch (ollamaError) {
       console.error('Ollama error:', ollamaError);
       const fallback = "I'm having trouble processing your request right now. Please try again in a moment.";
-      await dbManager.getCurrentAdapter().executeQuery(
-        `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
-         VALUES (?, ?, ?, ?)`,
-        [sessionId, message, fallback, '']
-      );
+      await systemDb.saveChat(sessionId, message, fallback, '');
       return sendJsonResponse(res, 200, {
         success: true,
         response: fallback,
@@ -648,12 +621,8 @@ app.post('/api/chat', async (req, res) => {
       }
     }
     
-    // Save to chat history
-    await dbManager.getCurrentAdapter().executeQuery(
-      `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
-       VALUES (?, ?, ?, ?)`,
-      [sessionId, message, aiResponse, tablesAccessed.join(',')]
-    );
+    // Save to system chat history
+    await systemDb.saveChat(sessionId, message, aiResponse, tablesAccessed.join(','));
     
     sendJsonResponse(res, 200, {
       success: true,
@@ -677,14 +646,7 @@ app.get('/api/history/:sessionId', async (req, res) => {
     const { sessionId } = req.params;
     const limit = parseInt(req.query.limit) || 50;
     
-    const rows = await dbManager.getCurrentAdapter().executeQuery(
-      `SELECT id, user_message, ai_response, tables_accessed, timestamp 
-       FROM chat_history 
-       WHERE session_id = ? 
-       ORDER BY timestamp DESC 
-       LIMIT ?`,
-      [sessionId, limit]
-    );
+    const rows = await systemDb.getHistory(sessionId, limit);
     sendJsonResponse(res, 200, { success: true, history: rows });
   } catch (error) {
     console.error('History error:', error);
@@ -696,12 +658,14 @@ app.get('/api/history/:sessionId', async (req, res) => {
 process.on('SIGTERM', async () => {
   console.log('SIGTERM received, shutting down gracefully');
   await dbManager.disconnectAll();
+  await systemDb.close();
   process.exit(0);
 });
 
 process.on('SIGINT', async () => {
   console.log('SIGINT received, shutting down gracefully');
   await dbManager.disconnectAll();
+  await systemDb.close();
   process.exit(0);
 });
 
@@ -724,6 +688,7 @@ async function startServer() {
       dbConfig.database = process.env.SQLITE_DB_PATH || './chatdb.sqlite';
     }
 
+    await systemDb.initialize();
     await dbManager.initialize(dbConfig);
     
     app.listen(PORT, () => {
