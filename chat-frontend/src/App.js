@@ -623,6 +623,10 @@ function App() {
           <div className="settings-panel max-w-2xl w-full max-h-[80vh] overflow-y-auto">
             <div className="flex justify-between items-center mb-6">
               <h2 className="text-2xl font-bold text-gray-900">Settings</h2>
+              <div className="flex items-center space-x-2 text-xs text-gray-500">
+                <span className={`w-2 h-2 rounded-full ${databaseInfo.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                <span>{databaseInfo.databaseType || 'Unknown'} - {databaseInfo.status || 'Checking...'}</span>
+              </div>
               <button
                 onClick={() => setShowSettings(false)}
                 className="text-gray-400 hover:text-gray-600"
@@ -631,7 +635,21 @@ function App() {
               </button>
             </div>
 
-            <div className="space-y-4">
+            <div className="mb-6 p-3 bg-gray-50 rounded-lg border border-gray-100">
+              <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Connected Database</h3>
+              <div className="grid grid-cols-2 gap-2 text-sm">
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Type:</span>
+                  <span className="font-medium text-gray-900">{databaseInfo.databaseType || 'N/A'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Status:</span>
+                  <span className={`font-medium ${databaseInfo.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>{databaseInfo.status || 'N/A'}</span>
+                </div>
+              </div>
+            </div>
+
+            <div className="space-y-6">
               <div>
                 <label className="block text-sm font-medium text-gray-700 mb-3">
                   Database Tables (Select to enable for AI)

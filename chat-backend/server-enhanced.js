@@ -408,21 +408,33 @@ app.get('/api/tables', async (req, res) => {
     const settings = await getSettings();
     const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim().toLowerCase()) : [];
     
+    console.log('Fetching all tables from database...');
     const allTables = await dbManager.getTableList();
-    const tables = [];
+    console.log(`Found ${allTables.length} tables in total`);
     
+    const tables = [];
     for (const table of allTables) {
-      const count = await dbManager.getTableCount(table.name);
-      tables.push({
-        ...table,
-        count: count,
-        enabled: enabledTables.includes(table.name.toLowerCase())
-      });
+      try {
+        const count = await dbManager.getTableCount(table.name);
+        tables.push({
+          ...table,
+          count: count,
+          enabled: enabledTables.includes(table.name.toLowerCase())
+        });
+      } catch (countErr) {
+        console.warn(`Could not get count for table ${table.name}:`, countErr.message);
+        tables.push({
+          ...table,
+          count: 0,
+          enabled: enabledTables.includes(table.name.toLowerCase())
+        });
+      }
     }
     
     sendJsonResponse(res, 200, { success: true, tables });
   } catch (error) {
-    sendJsonResponse(res, 500, { success: false, error: error.message });
+    console.error('Error in /api/tables:', error);
+    sendJsonResponse(res, 500, { success: false, error: 'Failed to retrieve table list: ' + error.message });
   }
 });
 
@@ -473,6 +485,9 @@ app.post('/api/chat', async (req, res) => {
               tables = [...new Set(tableMatches.map(m => m.split(/\s+/).pop().replace(/`/g, '').toLowerCase()))];
             }
           }
+
+          // SAVE SMART CHAT HISTORY
+          await systemDb.saveChat(sessionId, message, langChainResult.output, tables.join(','));
 
           return sendJsonResponse(res, 200, {
             success: true,

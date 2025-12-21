@@ -45,6 +45,7 @@ class SystemDatabase {
           ['ollama_model', 'deepseek-coder-v2'],
           ['enable_schema_info', 'true'],
           ['use_smart_chat', 'true'],
+          ['enabled_tables', 'products'],
           ['max_results', '100']
         ];
         
