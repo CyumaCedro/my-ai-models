@@ -614,8 +614,23 @@ app.get('/health', (req, res) => {
 });
 
 // Add /api/health as an alias for frontend access
-app.get('/api/health', (req, res) => {
-  sendJsonResponse(res, 200, { status: 'healthy', timestamp: new Date().toISOString() });
+app.get('/api/health', async (req, res) => {
+  try {
+    // Test database connection
+    await pool.execute('SELECT 1');
+    sendJsonResponse(res, 200, { 
+      status: 'healthy', 
+      databaseType: 'MySQL',
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    sendJsonResponse(res, 200, { 
+      status: 'unhealthy', 
+      databaseType: 'MySQL',
+      error: error.message,
+      timestamp: new Date().toISOString() 
+    });
+  }
 });
 
 app.get('/api/settings', async (req, res) => {
@@ -652,6 +667,31 @@ app.put('/api/settings', async (req, res) => {
     sendJsonResponse(res, 200, { success: true, message: 'Settings updated successfully' });
   } catch (error) {
     console.error('Settings update error:', error);
+    sendJsonResponse(res, 500, { success: false, error: error.message });
+  }
+});
+
+app.get('/api/databases', async (req, res) => {
+  try {
+    // Get current database name
+    const [currentDb] = await pool.execute('SELECT DATABASE() as current_db');
+    
+    // Get list of accessible databases
+    const [databases] = await pool.execute('SHOW DATABASES');
+    
+    const databaseList = databases
+      .filter(db => !['information_schema', 'performance_schema', 'sys', 'mysql'].includes(db.Database))
+      .map(db => ({
+        name: db.Database,
+        isCurrent: db.Database === currentDb[0].current_db
+      }));
+    
+    sendJsonResponse(res, 200, { 
+      success: true, 
+      databases: databaseList,
+      currentDatabase: currentDb[0].current_db
+    });
+  } catch (error) {
     sendJsonResponse(res, 500, { success: false, error: error.message });
   }
 });

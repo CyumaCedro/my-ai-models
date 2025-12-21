@@ -274,7 +274,7 @@ function App() {
   const [settings, setSettings] = useState({});
   const [tables, setTables] = useState([]);
   const [tempSettings, setTempSettings] = useState({});
-  const [databaseInfo, setDatabaseInfo] = useState({});
+const [databaseInfo, setDatabaseInfo] = useState({ status: 'loading', databaseType: 'MySQL' });
   const [togglingTable, setTogglingTable] = useState(null);
   const [databases, setDatabases] = useState([]);
   const [showDatabases, setShowDatabases] = useState(false);
@@ -288,14 +288,32 @@ function App() {
     scrollToBottom();
   }, [messages]);
 
-  useEffect(() => {
+useEffect(() => {
     // Initialize session and load data
     const newSessionId = 'session_' + Date.now() + '_' + Math.random().toString(36).substr(2, 9);
     setSessionId(newSessionId);
     loadSettings();
-    loadTables();
     loadDatabaseInfo();
-    loadDatabases();
+  }, []);
+
+  useEffect(() => {
+    // Load tables and databases after database info is loaded
+    if (databaseInfo && (databaseInfo.status || databaseInfo.databaseType)) {
+      loadTables();
+      loadDatabases();
+    }
+  }, [databaseInfo]);
+
+  // Fallback: try to load tables anyway after a delay
+  useEffect(() => {
+    const timer = setTimeout(() => {
+      if (tables.length === 0) {
+        console.log('Fallback: attempting to load tables anyway');
+        loadTables();
+      }
+    }, 2000);
+    
+    return () => clearTimeout(timer);
   }, []);
 
   const loadSettings = async () => {
@@ -311,39 +329,66 @@ function App() {
     }
   };
 
-  const loadTables = async () => {
+const loadTables = async () => {
     try {
+      console.log('Loading tables...');
       const response = await fetch('/api/tables');
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
       const data = await response.json();
+      console.log('Tables data received:', data);
       if (data.success) {
-        setTables(data.tables);
+        // Ensure all tables have the enabled property
+        const tablesWithEnabled = data.tables.map(table => ({
+          ...table,
+          enabled: table.enabled !== false // Default to true if not specified
+        }));
+        setTables(tablesWithEnabled);
       }
     } catch (error) {
       console.error('Failed to load tables:', error);
+      // Set empty array to prevent UI errors
+      setTables([]);
     }
   };
 
-  const loadDatabaseInfo = async () => {
+const loadDatabaseInfo = async () => {
     try {
+      console.log('Loading database info...');
       const response = await fetch('/api/health');
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
       const data = await response.json();
-      setDatabaseInfo(data);
+      console.log('Database info received:', data);
+      // Add databaseType if not present (default to MySQL for this backend)
+      const enhancedData = {
+        ...data,
+        databaseType: data.databaseType || 'MySQL'
+      };
+      setDatabaseInfo(enhancedData);
     } catch (error) {
       console.error('Failed to load database info:', error);
-      setDatabaseInfo({ status: 'unknown', databaseType: 'Unknown' });
+      setDatabaseInfo({ status: 'unknown', databaseType: 'MySQL' });
     }
   };
 
 const loadDatabases = async () => {
     try {
+      console.log('Loading databases...');
       const response = await fetch('/api/databases');
+      if (!response.ok) {
+        throw new Error(`HTTP ${response.status}: ${response.statusText}`);
+      }
       const data = await response.json();
-if (data.success) {
-      setDatabaseInfo(data);
-    } else {
-      console.error('Health check failed:', data);
-      setDatabaseInfo({ status: 'unknown', databaseType: 'Unknown' });
-    }
+      console.log('Databases data received:', data);
+      if (data.success) {
+        setDatabases(data.databases);
+      } else {
+        console.error('Failed to load databases:', data);
+        setDatabases([]);
+      }
     } catch (error) {
       console.error('Failed to load databases:', error);
       // Set empty array to prevent UI errors
@@ -547,23 +592,36 @@ if (data.success) {
           <div className="lg:col-span-1 space-y-4">
             {/* Database Connection Info */}
             <div className="bg-white rounded-lg shadow p-4 border-l-4 border-primary-600">
-              <div className="flex items-center space-x-2 mb-3">
+<div className="flex items-center space-x-2 mb-3">
                 <Database className="w-5 h-5 text-primary-600" />
                 <h3 className="font-semibold text-gray-900">Database Connection</h3>
               </div>
               <div className="space-y-2 text-sm">
                 <div className="flex items-center justify-between">
                   <span className="text-gray-600">Type:</span>
-                  <span className="font-medium text-gray-900">{databaseInfo.databaseType || 'Loading...'}</span>
+                  <span className="font-medium text-gray-900">
+                    {databaseInfo.status === 'loading' ? 'Loading...' : (databaseInfo.databaseType || 'MySQL')}
+                  </span>
                 </div>
                 <div className="flex items-center justify-between">
                   <span className="text-gray-600">Status:</span>
                   <div className="flex items-center space-x-1">
-                    <span className={`w-2 h-2 rounded-full ${databaseInfo.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'}`}></span>
-                    <span className={`font-medium ${databaseInfo.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>
-                      {databaseInfo.status === 'healthy' ? 'Connected' : 'Disconnected'}
+                    <span className={`w-2 h-2 rounded-full ${
+                      databaseInfo.status === 'healthy' ? 'bg-green-500' : 
+                      databaseInfo.status === 'loading' ? 'bg-yellow-500' : 'bg-red-500'
+                    }`}></span>
+                    <span className={`font-medium ${
+                      databaseInfo.status === 'healthy' ? 'text-green-600' : 
+                      databaseInfo.status === 'loading' ? 'text-yellow-600' : 'text-red-600'
+                    }`}>
+                      {databaseInfo.status === 'healthy' ? 'Connected' : 
+                       databaseInfo.status === 'loading' ? 'Connecting...' : 'Disconnected'}
                     </span>
                   </div>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Tables:</span>
+                  <span className="font-medium text-gray-900">{tables.filter(t => t.enabled).length} enabled</span>
                 </div>
                 {databases.length > 0 && (
                   <div className="pt-2 border-t border-gray-200">
@@ -598,17 +656,25 @@ if (data.success) {
               </div>
             </div>
 
-            {/* Database Tables with Quick Toggle */}
+{/* Database Tables with Quick Toggle */}
             <div className="bg-white rounded-lg shadow p-4">
               <div className="flex items-center justify-between mb-3">
                 <div className="flex items-center space-x-2">
                   <Table className="w-5 h-5 text-primary-600" />
                   <h3 className="font-semibold text-gray-900">Tables</h3>
                 </div>
-                <span className="text-xs text-gray-500">{tables.filter(t => t.enabled).length}/{tables.length} enabled</span>
+                <span className="text-xs text-gray-500">
+                  {tables.filter(t => t.enabled).length}/{tables.length} enabled 
+                  {tables.length === 0 && ' (no tables found)'}
+                </span>
               </div>
-              <div className="space-y-2 max-h-80 overflow-y-auto">
-                {tables.map((table) => {
+<div className="space-y-2 max-h-80 overflow-y-auto">
+                {tables.length === 0 ? (
+                  <div className="text-center py-4 text-gray-500 text-sm">
+                    {databaseInfo.status === 'loading' ? 'Loading tables...' : 'No tables found in database'}
+                  </div>
+                ) : (
+                  tables.map((table) => {
                   const isToggling = togglingTable === table.name;
                   return (
                     <div key={table.name} className={`flex items-center justify-between text-sm p-2 rounded border transition-all ${table.enabled
@@ -644,8 +710,9 @@ if (data.success) {
                       )}
                     </div>
                   );
-                })}
-              </div>
+})
+                  )}
+                </div>
               <div className="mt-3 pt-3 border-t border-gray-200">
                 <p className="text-xs text-gray-500">
                   💡 Click checkboxes to quickly add/remove tables from AI context
@@ -653,7 +720,7 @@ if (data.success) {
               </div>
             </div>
 
-            {/* Current Settings */}
+{/* Current Settings */}
             <div className="bg-white rounded-lg shadow p-4">
               <h3 className="font-semibold text-gray-900 mb-3">Settings</h3>
               <div className="space-y-2 text-sm">
@@ -671,6 +738,20 @@ if (data.success) {
                 </div>
               </div>
             </div>
+
+            {/* Debug Info (only in development) */}
+            {process.env.NODE_ENV === 'development' && (
+              <div className="bg-white rounded-lg shadow p-4 border-l-4 border-yellow-400">
+                <h3 className="font-semibold text-gray-900 mb-3">Debug Info</h3>
+                <div className="space-y-1 text-xs font-mono">
+                  <div>DB Status: {databaseInfo.status}</div>
+                  <div>DB Type: {databaseInfo.databaseType}</div>
+                  <div>Tables: {tables.length}</div>
+                  <div>Databases: {databases.length}</div>
+                  <div>Enabled Tables: {tables.filter(t => t.enabled).length}</div>
+                </div>
+              </div>
+            )}
           </div>
 
           {/* Main Chat Area */}
@@ -776,16 +857,24 @@ if (data.success) {
               </button>
             </div>
 
-            <div className="mb-6 p-3 bg-gray-50 rounded-lg border border-gray-100">
+<div className="mb-6 p-3 bg-gray-50 rounded-lg border border-gray-100">
               <h3 className="text-xs font-semibold text-gray-500 uppercase tracking-wider mb-2">Connected Database</h3>
               <div className="grid grid-cols-2 gap-2 text-sm">
                 <div className="flex justify-between">
                   <span className="text-gray-500">Type:</span>
-                  <span className="font-medium text-gray-900">{databaseInfo.databaseType || 'N/A'}</span>
+                  <span className="font-medium text-gray-900">{databaseInfo.databaseType || 'MySQL'}</span>
                 </div>
                 <div className="flex justify-between">
                   <span className="text-gray-500">Status:</span>
-                  <span className={`font-medium ${databaseInfo.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>{databaseInfo.status || 'N/A'}</span>
+                  <span className={`font-medium ${databaseInfo.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>{databaseInfo.status || 'Unknown'}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Available Tables:</span>
+                  <span className="font-medium text-gray-900">{tables.length}</span>
+                </div>
+                <div className="flex justify-between">
+                  <span className="text-gray-500">Enabled Tables:</span>
+                  <span className="font-medium text-gray-900">{tables.filter(t => t.enabled).length}</span>
                 </div>
               </div>
             </div>

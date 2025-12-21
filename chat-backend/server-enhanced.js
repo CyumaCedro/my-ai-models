@@ -90,17 +90,26 @@ async function getSettings() {
     return settingsCache;
   }
 
-  try {
+try {
     const [rows] = await pool.execute('SELECT setting_name, setting_value FROM chat_settings');
     settingsCache = {};
     rows.forEach(row => {
       settingsCache[row.setting_name] = row.setting_value;
     });
+    console.log('Settings loaded:', settingsCache);
     cacheTimestamp = now;
     return settingsCache;
   } catch (error) {
     console.error('Error fetching settings:', error);
-    return settingsCache;
+    
+    // Return default settings if database fails
+    const defaultSettings = {
+      enabled_tables: 'products', // At least show products table
+      max_results: '100',
+      enable_schema_info: 'true'
+    };
+    console.log('Using default settings:', defaultSettings);
+    return defaultSettings;
   }
 }
 
@@ -613,6 +622,26 @@ app.get('/health', (req, res) => {
   sendJsonResponse(res, 200, { status: 'healthy', timestamp: new Date().toISOString() });
 });
 
+// Add /api/health as an alias for frontend access
+app.get('/api/health', async (req, res) => {
+  try {
+    // Test database connection
+    await pool.execute('SELECT 1');
+    sendJsonResponse(res, 200, { 
+      status: 'healthy', 
+      databaseType: 'MySQL',
+      timestamp: new Date().toISOString() 
+    });
+  } catch (error) {
+    sendJsonResponse(res, 200, { 
+      status: 'unhealthy', 
+      databaseType: 'MySQL',
+      error: error.message,
+      timestamp: new Date().toISOString() 
+    });
+  }
+});
+
 app.get('/api/settings', async (req, res) => {
   try {
     const settings = await getSettings();
@@ -651,34 +680,101 @@ app.put('/api/settings', async (req, res) => {
   }
 });
 
+app.get('/api/databases', async (req, res) => {
+  try {
+    // Get current database name
+    const [currentDb] = await pool.execute('SELECT DATABASE() as current_db');
+    
+    // Get list of accessible databases
+    const [databases] = await pool.execute('SHOW DATABASES');
+    
+    const databaseList = databases
+      .filter(db => !['information_schema', 'performance_schema', 'sys', 'mysql'].includes(db.Database))
+      .map(db => ({
+        name: db.Database,
+        isCurrent: db.Database === currentDb[0].current_db
+      }));
+    
+    sendJsonResponse(res, 200, { 
+      success: true, 
+      databases: databaseList,
+      currentDatabase: currentDb[0].current_db
+    });
+  } catch (error) {
+    sendJsonResponse(res, 500, { success: false, error: error.message });
+  }
+});
+
 app.get('/api/tables', async (req, res) => {
   try {
     const settings = await getSettings();
-    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
+    const enabledTables = settings.enabled_tables ? 
+      settings.enabled_tables.split(',').map(t => t.trim().toLowerCase()) : [];
+    
+    // Get ALL tables in the current database, not just enabled ones
+    const [allTables] = await pool.execute(
+      `SELECT TABLE_NAME, TABLE_COMMENT 
+       FROM INFORMATION_SCHEMA.TABLES 
+       WHERE TABLE_SCHEMA = DATABASE() 
+       AND TABLE_TYPE = 'BASE TABLE'
+       ORDER BY TABLE_NAME`
+    );
     
     const tables = [];
-    for (const table of enabledTables) {
-      const name = table.trim().replace(/[^a-zA-Z0-9_]/g, '');
-      const [result] = await pool.execute(`SELECT COUNT(*) as count FROM \`${name}\``);
+    console.log(`Found ${allTables.length} tables in database`);
+    
+    for (const tableInfo of allTables) {
+      const tableName = tableInfo.TABLE_NAME;
       
-      // Get table comment/description
-      const [tableInfo] = await pool.execute(
-        `SELECT TABLE_COMMENT 
-         FROM INFORMATION_SCHEMA.TABLES 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-        [name]
-      );
+      // Skip system tables (but allow them to be shown if needed)
+      // Note: We're including all tables now, even system ones, so users can enable them if desired
       
-      tables.push({
-        name: name,
-        count: result[0].count,
-        description: tableInfo[0]?.TABLE_COMMENT || ''
-      });
+      try {
+        const [result] = await pool.execute(`SELECT COUNT(*) as count FROM \`${tableName}\``);
+        
+        const isEnabled = enabledTables.includes(tableName.toLowerCase());
+        
+        tables.push({
+          name: tableName,
+          count: result[0].count,
+          description: tableInfo.TABLE_COMMENT || '',
+          enabled: isEnabled
+        });
+      } catch (countError) {
+        // If we can't count rows (table doesn't exist or no permission), still include it
+        console.error(`Error counting rows for table ${tableName}:`, countError);
+        tables.push({
+          name: tableName,
+          count: 0,
+          description: tableInfo.TABLE_COMMENT || '',
+          enabled: enabledTables.includes(tableName.toLowerCase())
+        });
+      }
     }
     
+    console.log(`Returning ${tables.length} tables to frontend`);
     sendJsonResponse(res, 200, { success: true, tables });
   } catch (error) {
-    sendJsonResponse(res, 500, { success: false, error: error.message });
+    console.error('Error in /api/tables:', error);
+    
+    // Fallback: try to return hardcoded sample tables if available
+    try {
+      const fallbackTables = [
+        {
+          name: 'products',
+          count: 0,
+          description: 'Sample products table',
+          enabled: false
+        }
+      ];
+      sendJsonResponse(res, 200, { 
+        success: true, 
+        tables: fallbackTables,
+        warning: 'Using fallback data due to database error'
+      });
+    } catch (fallbackError) {
+      sendJsonResponse(res, 500, { success: false, error: error.message });
+    }
   }
 });
 
