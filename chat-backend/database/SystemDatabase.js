@@ -1,5 +1,10 @@
-const sqlite3 = require('sqlite3').verbose();
-const { open } = require('sqlite');
+let sqlite3, open;
+try {
+  sqlite3 = require('sqlite3').verbose();
+  open = require('sqlite');
+} catch (error) {
+  console.warn('SQLite dependencies not found, system database will be disabled');
+}
 const path = require('path');
 
 /**
@@ -11,8 +16,12 @@ class SystemDatabase {
     this.dbPath = path.join(__dirname, '..', 'system-state.sqlite');
   }
 
-  async initialize() {
+async initialize() {
     try {
+      if (!sqlite3 || !open) {
+        throw new Error('SQLite dependencies not available');
+      }
+      
       this.db = await open({
         filename: this.dbPath,
         driver: sqlite3.Database

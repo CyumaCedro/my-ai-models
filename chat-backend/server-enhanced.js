@@ -399,6 +399,17 @@ app.get('/api/health', async (req, res) => {
   }
 });
 
+// Add /api/databases endpoint for frontend
+app.get('/api/databases', async (req, res) => {
+  try {
+    const databases = await dbManager.getDatabaseList();
+    sendJsonResponse(res, 200, { success: true, databases });
+  } catch (error) {
+    console.error('Error fetching databases:', error);
+    sendJsonResponse(res, 500, { success: false, error: error.message });
+  }
+});
+
 app.get('/api/settings', async (req, res) => {
   try {
     const settings = await getSettings();

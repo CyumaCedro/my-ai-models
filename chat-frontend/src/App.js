@@ -334,7 +334,7 @@ function App() {
     }
   };
 
-  const loadDatabases = async () => {
+const loadDatabases = async () => {
     try {
       const response = await fetch('/api/databases');
       const data = await response.json();
@@ -343,6 +343,8 @@ function App() {
       }
     } catch (error) {
       console.error('Failed to load databases:', error);
+      // Set empty array to prevent UI errors
+      setDatabases([]);
     }
   };
 
