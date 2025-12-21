@@ -13,6 +13,7 @@ class DatabaseManager {
     this.settingsCache = {};
     this.cacheTimestamp = 0;
     this.CACHE_DURATION = 60000; // 1 minute
+    this.config = null;
   }
 
   /**
@@ -26,6 +27,7 @@ class DatabaseManager {
       const adapterKey = `${config.type || 'mysql'}_${config.host || 'localhost'}_${config.database || 'chatdb'}`;
       this.adapters.set(adapterKey, adapter);
       this.currentAdapter = adapter;
+      this.config = config;
       
       console.log(`Database initialized: ${adapter.type} - ${config.database}`);
       return true;
@@ -280,6 +282,13 @@ class DatabaseManager {
   getDatabaseType() {
     const adapter = this.getCurrentAdapter();
     return adapter.getDatabaseType();
+  }
+
+  /**
+   * Get database configuration
+   */
+  getConfig() {
+    return this.config;
   }
 }
 

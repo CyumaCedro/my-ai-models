@@ -12,12 +12,14 @@ const { URL } = require('url');
 
 // Import database manager
 const DatabaseManager = require('./database/DatabaseManager');
+const LangChainManager = require('./database/LangChainManager');
 
 const app = express();
 const PORT = process.env.PORT || 8000;
 
-// Initialize database manager
+// Initialize managers
 const dbManager = new DatabaseManager();
+const langChainManager = new LangChainManager(dbManager);
 
 // Middleware
 app.use(helmet());
@@ -477,6 +479,36 @@ app.post('/api/chat', async (req, res) => {
     const isDataRequest = dataKeywords.some(keyword => 
       message.toLowerCase().includes(keyword)
     );
+
+    // Try LangChain for smart data requests first if enabled
+    const useSmartChat = settings.use_smart_chat === 'true';
+    if (useSmartChat && isDataRequest) {
+      try {
+        const langChainResult = await langChainManager.ask(message, settings);
+        if (langChainResult && langChainResult.output) {
+          // Extract tables from intermediate steps if possible
+          let tables = [];
+          if (langChainResult.intermediateSteps) {
+            // Simple extraction logic for demonstration
+            const stepsStr = JSON.stringify(langChainResult.intermediateSteps);
+            const tableMatches = stepsStr.match(/\bfrom\s+`?(\w+)`?|\bjoin\s+`?(\w+)`?/gi);
+            if (tableMatches) {
+              tables = [...new Set(tableMatches.map(m => m.split(/\s+/).pop().replace(/`/g, '').toLowerCase()))];
+            }
+          }
+
+          return sendJsonResponse(res, 200, {
+            success: true,
+            response: langChainResult.output,
+            sessionId,
+            tablesAccessed: tables,
+            smartResponse: true
+          });
+        }
+      } catch (lcError) {
+        console.error('LangChain error, falling back to basic logic:', lcError);
+      }
+    }
     
     let aiResponse;
     let queryResults = null;
