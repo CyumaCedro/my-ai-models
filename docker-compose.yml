@@ -41,7 +41,7 @@ services:
       interval: 5s
       timeout: 3s
       retries: 20
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         reservations:
@@ -73,7 +73,7 @@ services:
     depends_on:
       ollama:
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
@@ -91,7 +91,7 @@ services:
     depends_on:
       - ollama
       - ollama-webui
-    restart: unless-stopped
+    restart: always
 
   ollama-init:
     image: ollama/ollama:latest
@@ -115,7 +115,7 @@ services:
     restart: "no"
 
   mysql:
-    image: mysql:8.0.36
+    image: mysql:8.0.2
     container_name: mysql-db
     ports:
       - "3306:3306"
@@ -125,18 +125,18 @@ services:
       - MYSQL_USER=chatuser
       - MYSQL_PASSWORD=chatpass
     volumes:
-      - mysql_data:/var/lib/mysql
+      - mysql_datau:/var/lib/mysql
       - ./db/init:/docker-entrypoint-initdb.d
     healthcheck:
       test: ["CMD-SHELL", "mysqladmin ping -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD || exit 1"]
       interval: 5s
       timeout: 5s
       retries: 20
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
-          memory: 2G
+          memory: 4G
 
   chat-backend:
     build:
@@ -168,7 +168,7 @@ services:
         condition: service_healthy
       ollama:
         condition: service_healthy
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
@@ -195,7 +195,7 @@ services:
     depends_on:
       chat-backend:
         condition: service_started
-    restart: unless-stopped
+    restart: always
     deploy:
       resources:
         limits:
@@ -206,5 +206,5 @@ volumes:
     driver: local
   ollama_webui_data:
     driver: local
-  mysql_data:
+  mysql_datau:
     driver: local
