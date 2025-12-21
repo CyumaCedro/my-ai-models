@@ -219,6 +219,7 @@ async function executeSafeQuery(query) {
   const tableRegex = /\bfrom\s+`?(\w+)`?|\bjoin\s+`?(\w+)`?|\binto\s+`?(\w+)`?/gi;
   const tablesInQuery = new Set();
   let match;
+  
   while ((match = tableRegex.exec(cleanQuery)) !== null) {
     const tableName = (match[1] || match[2] || match[3]).toLowerCase();
     if (tableName && !['information_schema', 'sys', 'mysql', 'performance_schema'].includes(tableName)) {
@@ -265,9 +266,9 @@ async function executeSafeQuery(query) {
 // Improved prompt engineering for better AI responses
 async function callOllama(prompt, context = '', conversationHistory = []) {
   const settings = await getSettings();
-  const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
+  const ollamaUrl = settings.ollama_url || 'http://127.0.0.1:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  
+
   const systemPrompt = `You are a helpful assistant that provides intelligent insights from data. Follow these rules strictly:
 
 1. ANSWER FORMAT: Provide clear, natural language answers about the actual data. Be conversational and helpful.
@@ -314,6 +315,7 @@ ${context}`;
   };
 
   const url = new URL(`${ollamaUrl}/api/chat`);
+  
   const body = JSON.stringify(payload);
   const options = {
     hostname: url.hostname,
@@ -374,9 +376,9 @@ function stripTechnicalContent(text) {
 
 async function summarizeWithData(question, dataJson, context = '') {
   const settings = await getSettings();
-  const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
+  const ollamaUrl = settings.ollama_url || 'http://127.0.0.1:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  
+
   const systemPrompt = `You are a helpful analyst providing insights from data. Focus on what the data reveals, not technical details.
 
 RULES:
@@ -452,9 +454,9 @@ Please analyze this data and provide a clear, helpful answer to the question.`;
 
 async function callGeneralAnswer(prompt) {
   const settings = await getSettings();
-  const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
+  const ollamaUrl = settings.ollama_url || 'http://127.0.0.1:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  
+
   const systemPrompt = `You are a helpful assistant. Answer questions clearly and concisely.
 Keep responses natural and conversational. No technical jargon unless specifically asked.`;
 
@@ -504,72 +506,6 @@ Keep responses natural and conversational. No technical jargon unless specifical
 
   const parsed = JSON.parse(responseData);
   return stripTechnicalContent(parsed?.message?.content || '');
-}
-
-async function buildSchemaMap(enabledTables) {
-  const map = {};
-  if (!enabledTables || enabledTables.length === 0) return map;
-  
-  for (const table of enabledTables) {
-    try {
-      const tableName = table.trim();
-      const [cols] = await pool.execute(
-        `SELECT COLUMN_NAME, DATA_TYPE, COLUMN_COMMENT 
-         FROM INFORMATION_SCHEMA.COLUMNS 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ? 
-         ORDER BY ORDINAL_POSITION`,
-        [tableName]
-      );
-      
-      map[tableName] = {
-        columns: cols.map(c => ({
-          name: c.COLUMN_NAME.toLowerCase(),
-          type: c.DATA_TYPE,
-          comment: c.COLUMN_COMMENT
-        }))
-      };
-    } catch (err) {
-      console.error(`Error building schema for ${table}:`, err);
-    }
-  }
-  return map;
-}
-
-function findRelevantTables(message, schemaMap) {
-  const text = message.toLowerCase();
-  const tokens = text.split(/[^a-z0-9_]+/).filter(Boolean);
-  const scores = [];
-  
-  for (const [table, info] of Object.entries(schemaMap)) {
-    let score = 0;
-    const tableLower = table.toLowerCase();
-    
-    // Direct table name mention
-    if (tokens.some(t => tableLower.includes(t) || t.includes(tableLower))) {
-      score += 5;
-    }
-    
-    // Column name matches
-    for (const col of info.columns) {
-      if (tokens.some(t => col.name.includes(t) || t.includes(col.name))) {
-        score += 2;
-      }
-      // Check column comments for semantic matches
-      if (col.comment) {
-        const commentLower = col.comment.toLowerCase();
-        if (tokens.some(t => commentLower.includes(t))) {
-          score += 1;
-        }
-      }
-    }
-    
-    if (score > 0) {
-      scores.push({ table, score });
-    }
-  }
-  
-  scores.sort((a, b) => b.score - a.score);
-  return scores.slice(0, 3).map(s => s.table); // Return top 3 relevant tables
 }
 
 // Enhanced conversation history retrieval
@@ -659,31 +595,37 @@ app.put('/api/settings', async (req, res) => {
 app.get('/api/tables', async (req, res) => {
   try {
     const settings = await getSettings();
-    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',') : [];
+    const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim()) : [];
     
-    const tables = [];
-    for (const table of enabledTables) {
-      const name = table.trim().replace(/[^a-zA-Z0-9_]/g, '');
-      const [result] = await pool.execute(`SELECT COUNT(*) as count FROM \`${name}\``);
-      
-      // Get table comment/description
-      const [tableInfo] = await pool.execute(
-        `SELECT TABLE_COMMENT 
-         FROM INFORMATION_SCHEMA.TABLES 
-         WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?`,
-        [name]
-      );
-      
-      tables.push({
-        name: name,
-        count: result[0].count,
-        description: tableInfo[0]?.TABLE_COMMENT || ''
-      });
+    console.log('Fetching all tables from database...');
+    const [tables] = await pool.execute(`
+      SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS
+      FROM INFORMATION_SCHEMA.TABLES 
+      WHERE TABLE_SCHEMA = DATABASE() 
+        AND TABLE_TYPE = 'BASE TABLE'
+      ORDER BY TABLE_NAME
+    `);
+
+    console.log(`Found ${tables.length} tables in total`);
+    console.log('Raw tables result:', tables);
+    console.log('Tables type:', typeof tables, 'isArray:', Array.isArray(tables));
+
+    if (!tables || !Array.isArray(tables)) {
+      console.warn('getTableList: Invalid result from database');
+      return sendJsonResponse(res, 200, { success: true, tables: [] });
     }
-    
-    sendJsonResponse(res, 200, { success: true, tables });
+
+    const tableList = tables.map(table => ({
+      name: table.TABLE_NAME,
+      description: table.TABLE_COMMENT || '',
+      estimatedRows: table.TABLE_ROWS || 0
+    }));
+
+    console.log('Processed table list:', tableList);
+    sendJsonResponse(res, 200, { success: true, tables: tableList });
   } catch (error) {
-    sendJsonResponse(res, 500, { success: false, error: error.message });
+    console.error('Error in /api/tables:', error);
+    sendJsonResponse(res, 500, { success: false, error: 'Failed to retrieve table list: ' + error.message });
   }
 });
 
@@ -722,7 +664,6 @@ app.post('/api/chat', async (req, res) => {
     let queryResults = null;
     const enabledTables = settings.enabled_tables ? 
       settings.enabled_tables.split(',').map(t => t.trim()) : [];
-    const schemaMap = await buildSchemaMap(enabledTables);
     
     try {
       aiResponse = await callOllama(message, context, conversationHistory);
@@ -787,63 +728,57 @@ app.post('/api/chat', async (req, res) => {
             }
           } else if (queryResults && queryResults.length === 0) {
             // Empty result set - try fallback query
-            const relevantTables = findRelevantTables(message, schemaMap);
-            if (relevantTables.length > 0) {
-              for (const fallbackTable of relevantTables) {
-                try {
-                  const fallbackQuery = `SELECT * FROM ${fallbackTable} LIMIT 10`;
-                  const rows = await executeSafeQuery(fallbackQuery);
-                  if (rows.length > 0) {
-                    queryResults = rows;
-                    const summarized = await summarizeWithData(
-                      message, 
-                      JSON.stringify(rows, null, 2),
-                      context
-                    );
-                    if (summarized) {
-                      aiResponse = summarized;
-                    }
-                    if (!tablesAccessed.includes(fallbackTable)) {
-                      tablesAccessed.push(fallbackTable);
-                    }
-                    break;
+            for (const table of enabledTables) {
+              try {
+                const fallbackQuery = `SELECT * FROM ${table} LIMIT 10`;
+                const rows = await executeSafeQuery(fallbackQuery);
+                if (rows.length > 0) {
+                  queryResults = rows;
+                  const summarized = await summarizeWithData(
+                    message, 
+                    JSON.stringify(rows, null, 2),
+                    context
+                  );
+                  if (summarized) {
+                    aiResponse = summarized;
                   }
-                } catch (fbErr) {
-                  console.error(`Fallback query error for ${fallbackTable}:`, fbErr);
-                }
-              }
-            }
-          }
-          
-        } catch (queryError) {
-          console.error('Query execution error:', queryError);
-          // Keep the original AI response if query fails
-        }
-      } else {
-        // No SQL found but is a data request - try to find relevant table
-        const relevantTables = findRelevantTables(message, schemaMap);
-        if (relevantTables.length > 0) {
-          for (const table of relevantTables) {
-            try {
-              const rows = await executeSafeQuery(`SELECT * FROM ${table} LIMIT 10`);
-              if (rows.length > 0) {
-                queryResults = rows;
-                const summarized = await summarizeWithData(
-                  message, 
-                  JSON.stringify(rows, null, 2),
-                  context
-                );
-                if (summarized) {
-                  aiResponse = summarized;
                 }
                 if (!tablesAccessed.includes(table)) {
                   tablesAccessed.push(table);
                 }
                 break;
               }
-            } catch (err) {
-              console.error(`Error querying ${table}:`, err);
+            } catch (fbErr) {
+              console.error(`Fallback query error for ${table}:`, fbErr);
             }
+          }
+        } catch (queryError) {
+          console.error('Query execution error:', queryError);
+          // Keep the original AI response if query fails
+        }
+      } else {
+        // No SQL found but is a data request - try to find relevant table
+        for (const table of enabledTables) {
+          try {
+            const rows = await executeSafeQuery(`SELECT * FROM ${table} LIMIT 10`);
+            if (rows.length > 0) {
+              queryResults = rows;
+              const summarized = await summarizeWithData(
+                message, 
+                JSON.stringify(rows, null, 2),
+                context
+              );
+              if (summarized) {
+                aiResponse = summarized;
+              }
+            }
+            if (!tablesAccessed.includes(table)) {
+              tablesAccessed.push(table);
+            }
+            break;
+          }
+          } catch (err) {
+            console.error(`Error querying ${table}:`, err);
           }
         }
       }

@@ -338,9 +338,12 @@ const loadDatabases = async () => {
     try {
       const response = await fetch('/api/databases');
       const data = await response.json();
-      if (data.success) {
-        setDatabases(data.databases);
-      }
+if (data.success) {
+      setDatabaseInfo(data);
+    } else {
+      console.error('Health check failed:', data);
+      setDatabaseInfo({ status: 'unknown', databaseType: 'Unknown' });
+    }
     } catch (error) {
       console.error('Failed to load databases:', error);
       // Set empty array to prevent UI errors
