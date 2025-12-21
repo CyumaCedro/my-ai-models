@@ -42,9 +42,14 @@ class DatabaseAdapter {
     throw new Error('getForeignKeyRelations() must be implemented by subclass');
   }
 
-  async getSampleData(tableName, limit = 3) {
-    const query = this.getSampleDataQuery(tableName, limit);
-    return await this.executeQuery(query);
+async getSampleData(tableName, limit = 3) {
+    try {
+      const query = this.getSampleDataQuery(tableName, limit);
+      return await this.executeQuery(query);
+    } catch (error) {
+      console.warn(`Could not get sample data for ${tableName}:`, error.message);
+      return [];
+    }
   }
 
   getSampleDataQuery(tableName, limit) {

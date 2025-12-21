@@ -86,33 +86,53 @@ class MySQLAdapter extends DatabaseAdapter {
         AND REFERENCED_TABLE_NAME IS NOT NULL
     `, [sanitizedTable]);
 
-    return {
+return {
       tableName: sanitizedTable,
-      columns: columns,
-      foreignKeys: foreignKeys
+      columns: columns || [],
+      foreignKeys: foreignKeys || []
     };
   }
 
-  async getTableList() {
-    const [tables] = await this.executeQuery(`
-      SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS
-      FROM INFORMATION_SCHEMA.TABLES 
-      WHERE TABLE_SCHEMA = DATABASE() 
-        AND TABLE_TYPE = 'BASE TABLE'
-      ORDER BY TABLE_NAME
-    `);
+async getTableList() {
+    try {
+      const tables = await this.executeQuery(`
+        SELECT TABLE_NAME, TABLE_COMMENT, TABLE_ROWS
+        FROM INFORMATION_SCHEMA.TABLES 
+        WHERE TABLE_SCHEMA = DATABASE() 
+          AND TABLE_TYPE = 'BASE TABLE'
+        ORDER BY TABLE_NAME
+      `);
 
-    return tables.map(table => ({
-      name: table.TABLE_NAME,
-      description: table.TABLE_COMMENT || '',
-      estimatedRows: table.TABLE_ROWS || 0
-    }));
+      if (!tables || !Array.isArray(tables)) {
+        console.warn('getTableList: Invalid result from database');
+        return [];
+      }
+
+      return tables.map(table => ({
+        name: table.TABLE_NAME,
+        description: table.TABLE_COMMENT || '',
+        estimatedRows: table.TABLE_ROWS || 0
+      }));
+    } catch (error) {
+      console.error('Error in getTableList:', error);
+      return [];
+    }
   }
 
-  async getTableCount(tableName) {
-    const sanitizedTable = this.sanitizeIdentifier(tableName);
-    const [result] = await this.executeQuery(`SELECT COUNT(*) as count FROM \`${sanitizedTable}\``);
-    return result[0].count;
+async getTableCount(tableName) {
+    try {
+      const sanitizedTable = this.sanitizeIdentifier(tableName);
+      const result = await this.executeQuery(`SELECT COUNT(*) as count FROM \`${sanitizedTable}\``);
+      
+      if (!result || !Array.isArray(result) || result.length === 0) {
+        return 0;
+      }
+      
+      return result[0].count;
+    } catch (error) {
+      console.error(`Error getting count for ${tableName}:`, error);
+      return 0;
+    }
   }
 
   async getForeignKeyRelations(tableName) {

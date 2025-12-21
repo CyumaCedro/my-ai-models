@@ -6,8 +6,7 @@ WORKDIR /app
 COPY package*.json ./
 
 # Install dependencies
-RUN npm i langchain
-RUN npm i --only=production
+RUN npm install
 
 # Copy source code
 COPY . .

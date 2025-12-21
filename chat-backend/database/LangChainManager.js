@@ -1,7 +1,17 @@
 const { ChatOllama } = require("@langchain/ollama");
-const { SqlDatabase } = require("@langchain/community/sql_db");
-const { createSqlAgent, SqlToolkit } = require("@langchain/community/agents/toolkits/sql");
-const { DataSource } = require("typeorm");
+
+// Try to import LangChain SQL components, but handle gracefully if not available
+let SqlDatabase, createSqlAgent, SqlToolkit, DataSource, ChatOllama;
+try {
+  ChatOllama = require("@langchain/ollama").ChatOllama;
+  SqlDatabase = require("@langchain/community/sql_db").SqlDatabase;
+  createSqlAgent = require("@langchain/community/agents/toolkits/sql").createSqlAgent;
+  SqlToolkit = require("@langchain/community/agents/toolkits/sql").SqlToolkit;
+  DataSource = require("typeorm").DataSource;
+} catch (error) {
+  console.warn('LangChain components not available:', error.message);
+  console.warn('Smart chat features will be disabled');
+}
 
 /**
  * LangChain Manager - Handles intelligent data querying using LangChain
@@ -13,20 +23,30 @@ class LangChainManager {
     this.db = null;
     this.executor = null;
     this.initialized = false;
+    this.available = this.checkDependencies();
+  }
+
+  checkDependencies() {
+    return ChatOllama && SqlDatabase && createSqlAgent && SqlToolkit && DataSource;
   }
 
   /**
    * Initialize LangChain with database connection and LLM
    */
-  async initialize(settings = {}) {
+async initialize(settings = {}) {
     try {
+      // Check if all required components are available
+      if (!this.available) {
+        throw new Error("LangChain components are not available. Smart chat features will be disabled.");
+      }
+
       const config = this.dbManager.getConfig();
       if (!config) {
         throw new Error("Database configuration not available in DB Manager");
       }
 
       // 1. Initialize LLM (Ollama)
-      const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
+      const ollamaUrl = settings.ollama_url || 'http://ollama:11434';
       const model = settings.ollama_model || 'deepseek-coder-v2';
       
       this.llm = new ChatOllama({

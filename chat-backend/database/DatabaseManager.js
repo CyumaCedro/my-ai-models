@@ -126,10 +126,10 @@ class DatabaseManager {
   /**
    * Get enhanced schema information for all enabled tables
    */
-  async getEnhancedSchema(settings = {}) {
+async getEnhancedSchema(settings = {}) {
     const adapter = this.getCurrentAdapter();
     const enabledTables = settings.enabled_tables ?
-      settings.enabled_tables.split(',').map(t => t.trim()) : [];
+      settings.enabled_tables.split(',').map(t => t.trim()).filter(t => t.length > 0) : [];
 
     if (enabledTables.length === 0) return '';
 
@@ -192,7 +192,7 @@ class DatabaseManager {
   /**
    * Build schema map for AI processing
    */
-  async buildSchemaMap(enabledTables) {
+async buildSchemaMap(enabledTables) {
     const adapter = this.getCurrentAdapter();
     const map = {};
 
@@ -203,14 +203,18 @@ class DatabaseManager {
         const tableName = table.trim();
         const schema = await adapter.getTableSchema(tableName);
 
-        map[tableName] = {
-          columns: schema.columns.map(c => ({
-            name: c.COLUMN_NAME.toLowerCase(),
-            type: c.DATA_TYPE,
-            comment: c.COLUMN_COMMENT
-          })),
-          foreignKeys: schema.foreignKeys
-        };
+        if (schema && schema.columns && Array.isArray(schema.columns)) {
+          map[tableName] = {
+            columns: schema.columns.map(c => ({
+              name: c.COLUMN_NAME.toLowerCase(),
+              type: c.DATA_TYPE,
+              comment: c.COLUMN_COMMENT
+            })),
+            foreignKeys: schema.foreignKeys || []
+          };
+        } else {
+          console.warn(`Invalid schema for table ${tableName}`);
+        }
       } catch (err) {
         console.error(`Error building schema for ${table}:`, err);
       }
