@@ -12,15 +12,26 @@ const { URL } = require('url');
 
 // Import database manager
 const DatabaseManager = require('./database/DatabaseManager');
-const LangChainManager = require('./database/LangChainManager');
 const systemDb = require('./database/SystemDatabase');
+
+// Try to import LangChainManager, but don't fail if it has issues
+let LangChainManager = null;
+let langChainManager = null;
+try {
+  LangChainManager = require('./database/LangChainManager');
+  const dbManager = new DatabaseManager();
+  langChainManager = new LangChainManager(dbManager);
+  console.log('LangChainManager loaded successfully');
+} catch (error) {
+  console.warn('LangChainManager could not be loaded:', error.message);
+  console.warn('Smart chat features will be disabled');
+}
 
 const app = express();
 const PORT = process.env.PORT || 8000;
 
 // Initialize managers
 const dbManager = new DatabaseManager();
-const langChainManager = new LangChainManager(dbManager);
 
 // Middleware
 app.use(helmet());
@@ -28,7 +39,7 @@ app.use(morgan('combined'));
 app.use(cors());
 
 // Enhanced JSON parsing with error handling
-app.use(express.json({ 
+app.use(express.json({
   limit: '10mb',
   strict: true,
   type: 'application/json'
@@ -51,7 +62,7 @@ function sendJsonResponse(res, statusCode, data) {
   try {
     // Validate that data can be stringified
     const jsonString = JSON.stringify(data);
-    
+
     // Set proper headers
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.status(statusCode);
@@ -91,7 +102,7 @@ async function callOllama(prompt, context = '', conversationHistory = []) {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  
+
   const systemPrompt = `You are a helpful assistant that provides intelligent insights from data. Follow these rules strictly:
 
 1. ANSWER FORMAT: Provide clear, natural language answers about the actual data. Be conversational and helpful.
@@ -119,11 +130,11 @@ ${context}`;
   const messages = [
     { role: 'system', content: systemPrompt }
   ];
-  
+
   // Add conversation history for context (last 3 exchanges)
   const recentHistory = conversationHistory.slice(-6);
   messages.push(...recentHistory);
-  
+
   messages.push({ role: 'user', content: prompt });
 
   const payload = {
@@ -179,20 +190,20 @@ ${context}`;
 function stripTechnicalContent(text) {
   if (!text) return '';
   let cleaned = text;
-  
+
   // Remove SQL tags and content
   cleaned = cleaned.replace(/<sql>[\s\S]*?<\/sql>/gi, '');
-  
+
   // Remove code blocks
   cleaned = cleaned.replace(/```[\s\S]*?```/g, '');
   cleaned = cleaned.replace(/`[^`]+`/g, '');
-  
+
   // Remove SQL statements that leaked through
   cleaned = cleaned.replace(/\b(SELECT|WITH|FROM|WHERE|JOIN|GROUP BY|ORDER BY|HAVING|LIMIT)\b[\s\S]*?(;|\n\n|$)/gi, '');
-  
+
   // Remove technical terms accidentally included
   cleaned = cleaned.replace(/\b(database|query|table|SQL|execute|fetch)\b/gi, '');
-  
+
   return cleaned.trim();
 }
 
@@ -200,7 +211,7 @@ async function summarizeWithData(question, dataJson, context = '') {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  
+
   const systemPrompt = `You are a helpful analyst providing insights from data. Focus on what the data reveals, not technical details.
 
 RULES:
@@ -278,7 +289,7 @@ async function callGeneralAnswer(prompt) {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
-  
+
   const systemPrompt = `You are a helpful assistant. Answer questions clearly and concisely.
 Keep responses natural and conversational. No technical jargon unless specifically asked.`;
 
@@ -354,17 +365,36 @@ const settingsUpdateSchema = Joi.object({
 app.get('/health', async (req, res) => {
   try {
     const dbHealth = await dbManager.getHealthStatus();
-    sendJsonResponse(res, 200, { 
-      status: 'healthy', 
+    sendJsonResponse(res, 200, {
+      status: 'healthy',
       timestamp: new Date().toISOString(),
       database: dbHealth,
       databaseType: dbManager.getDatabaseType()
     });
   } catch (error) {
-    sendJsonResponse(res, 500, { 
-      status: 'unhealthy', 
+    sendJsonResponse(res, 500, {
+      status: 'unhealthy',
       timestamp: new Date().toISOString(),
-      error: error.message 
+      error: error.message
+    });
+  }
+});
+
+// Add /api/health as an alias for frontend access through nginx proxy
+app.get('/api/health', async (req, res) => {
+  try {
+    const dbHealth = await dbManager.getHealthStatus();
+    sendJsonResponse(res, 200, {
+      status: 'healthy',
+      timestamp: new Date().toISOString(),
+      database: dbHealth,
+      databaseType: dbManager.getDatabaseType()
+    });
+  } catch (error) {
+    sendJsonResponse(res, 500, {
+      status: 'unhealthy',
+      timestamp: new Date().toISOString(),
+      error: error.message
     });
   }
 });
@@ -386,16 +416,18 @@ app.put('/api/settings', async (req, res) => {
     }
 
     const { settings } = value;
-    
+
     for (const [key, val] of Object.entries(settings)) {
       await systemDb.updateSetting(key, val);
     }
-    
+
     // Clear cache and reset LangChain
     settingsCache = {};
     cacheTimestamp = 0;
-    await langChainManager.reset();
-    
+    if (langChainManager) {
+      await langChainManager.reset();
+    }
+
     sendJsonResponse(res, 200, { success: true, message: 'Settings updated successfully' });
   } catch (error) {
     console.error('Settings update error:', error);
@@ -407,11 +439,11 @@ app.get('/api/tables', async (req, res) => {
   try {
     const settings = await getSettings();
     const enabledTables = settings.enabled_tables ? settings.enabled_tables.split(',').map(t => t.trim().toLowerCase()) : [];
-    
+
     console.log('Fetching all tables from database...');
     const allTables = await dbManager.getTableList();
     console.log(`Found ${allTables.length} tables in total`);
-    
+
     const tables = [];
     for (const table of allTables) {
       try {
@@ -430,7 +462,7 @@ app.get('/api/tables', async (req, res) => {
         });
       }
     }
-    
+
     sendJsonResponse(res, 200, { success: true, tables });
   } catch (error) {
     console.error('Error in /api/tables:', error);
@@ -448,30 +480,30 @@ app.post('/api/chat', async (req, res) => {
     const { message, sessionId } = value;
     const settings = await getSettings();
     const enableSchema = settings.enable_schema_info === 'true';
-    
+
     let context = '';
     let tablesAccessed = [];
-    
+
     if (enableSchema) {
       context = await dbManager.getEnhancedSchema(settings);
     }
-    
+
     // Get conversation history for better context
     const conversationHistory = await getConversationHistory(sessionId);
-    
+
     // Determine if this is a data request
     const dataKeywords = [
       'show', 'list', 'get', 'find', 'search', 'count', 'how many', 'how much',
       'what', 'when', 'where', 'who', 'which', 'display', 'give me', 'tell me',
       'average', 'total', 'sum', 'maximum', 'minimum', 'latest', 'recent'
     ];
-    const isDataRequest = dataKeywords.some(keyword => 
+    const isDataRequest = dataKeywords.some(keyword =>
       message.toLowerCase().includes(keyword)
     );
 
     // Try LangChain for smart data requests first if enabled
     const useSmartChat = settings.use_smart_chat === 'true';
-    if (useSmartChat && isDataRequest) {
+    if (useSmartChat && isDataRequest && langChainManager) {
       try {
         const langChainResult = await langChainManager.ask(message, settings);
         if (langChainResult && langChainResult.output) {
@@ -501,13 +533,13 @@ app.post('/api/chat', async (req, res) => {
         console.error('LangChain error, falling back to basic logic:', lcError);
       }
     }
-    
+
     let aiResponse;
     let queryResults = null;
-    const enabledTables = settings.enabled_tables ? 
+    const enabledTables = settings.enabled_tables ?
       settings.enabled_tables.split(',').map(t => t.trim()) : [];
     const schemaMap = await dbManager.buildSchemaMap(enabledTables);
-    
+
     try {
       aiResponse = await callOllama(message, context, conversationHistory);
     } catch (ollamaError) {
@@ -520,7 +552,7 @@ app.post('/api/chat', async (req, res) => {
         sessionId
       });
     }
-    
+
     // Enhanced SQL extraction and execution
     if (isDataRequest && aiResponse) {
       const sqlPatterns = [
@@ -529,7 +561,7 @@ app.post('/api/chat', async (req, res) => {
         /```\n(SELECT[\s\S]*?)\n```/i,
         /(SELECT\s+[\s\S]*?FROM[\s\S]*?(?=\n\n|\n[A-Z]|$))/i
       ];
-      
+
       let extractedQuery = null;
       for (const pattern of sqlPatterns) {
         const match = aiResponse.match(pattern);
@@ -538,16 +570,16 @@ app.post('/api/chat', async (req, res) => {
           break;
         }
       }
-      
+
       if (extractedQuery) {
         try {
           queryResults = await dbManager.executeSafeQuery(extractedQuery, settings);
-          
+
           // Extract accessed tables
           const adapter = dbManager.getCurrentAdapter();
           const tablesInQuery = adapter.extractTableNames(extractedQuery);
           tablesAccessed = [...new Set([...tablesAccessed, ...tablesInQuery])];
-          
+
           // Summarize results with data
           if (queryResults && queryResults.length > 0) {
             const dataJson = JSON.stringify(queryResults.slice(0, 50), null, 2); // Limit for token size
@@ -570,7 +602,7 @@ app.post('/api/chat', async (req, res) => {
                   if (rows.length > 0) {
                     queryResults = rows;
                     const summarized = await summarizeWithData(
-                      message, 
+                      message,
                       JSON.stringify(rows, null, 2),
                       context
                     );
@@ -588,7 +620,7 @@ app.post('/api/chat', async (req, res) => {
               }
             }
           }
-          
+
         } catch (queryError) {
           console.error('Query execution error:', queryError);
           // Keep the original AI response if query fails
@@ -603,7 +635,7 @@ app.post('/api/chat', async (req, res) => {
               if (rows.length > 0) {
                 queryResults = rows;
                 const summarized = await summarizeWithData(
-                  message, 
+                  message,
                   JSON.stringify(rows, null, 2),
                   context
                 );
@@ -622,10 +654,10 @@ app.post('/api/chat', async (req, res) => {
         }
       }
     }
-    
+
     // Clean up response
     aiResponse = stripTechnicalContent(aiResponse);
-    
+
     // Fallback to general answer if needed
     if (!aiResponse || aiResponse.trim() === '') {
       try {
@@ -635,10 +667,10 @@ app.post('/api/chat', async (req, res) => {
         aiResponse = "I apologize, but I'm having trouble generating a response. Could you please rephrase your question?";
       }
     }
-    
+
     // Save to system chat history
     await systemDb.saveChat(sessionId, message, aiResponse, tablesAccessed.join(','));
-    
+
     sendJsonResponse(res, 200, {
       success: true,
       response: aiResponse,
@@ -646,12 +678,12 @@ app.post('/api/chat', async (req, res) => {
       queryResults: queryResults ? queryResults.slice(0, 100) : null, // Limit results sent to client
       tablesAccessed
     });
-    
+
   } catch (error) {
     console.error('Chat error:', error);
-    sendJsonResponse(res, 500, { 
-      success: false, 
-      error: 'An error occurred while processing your request. Please try again.' 
+    sendJsonResponse(res, 500, {
+      success: false,
+      error: 'An error occurred while processing your request. Please try again.'
     });
   }
 });
@@ -660,7 +692,7 @@ app.get('/api/history/:sessionId', async (req, res) => {
   try {
     const { sessionId } = req.params;
     const limit = parseInt(req.query.limit) || 50;
-    
+
     const rows = await systemDb.getHistory(sessionId, limit);
     sendJsonResponse(res, 200, { success: true, history: rows });
   } catch (error) {
@@ -705,7 +737,7 @@ async function startServer() {
 
     await systemDb.initialize();
     await dbManager.initialize(dbConfig);
-    
+
     app.listen(PORT, () => {
       console.log(`Chat backend server running on port ${PORT}`);
       console.log(`Health check available at http://localhost:${PORT}/health`);

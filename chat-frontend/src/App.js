@@ -17,7 +17,7 @@ function App() {
     if (!rows || !Array.isArray(rows) || rows.length === 0) return null;
     const columns = Object.keys(rows[0] || {});
     if (columns.length === 0) return null;
-    
+
     const formatCell = (val) => {
       if (val === null || val === undefined) return '';
       if (typeof val === 'object') return JSON.stringify(val, null, 2);
@@ -225,7 +225,7 @@ function App() {
     // Enhanced links with external icon
     a: ({ href, children }) => {
       const isExternal = href && (href.startsWith('http') || href.startsWith('www'));
-      
+
       return (
         <a
           href={href}
@@ -275,6 +275,9 @@ function App() {
   const [tables, setTables] = useState([]);
   const [tempSettings, setTempSettings] = useState({});
   const [databaseInfo, setDatabaseInfo] = useState({});
+  const [togglingTable, setTogglingTable] = useState(null);
+  const [databases, setDatabases] = useState([]);
+  const [showDatabases, setShowDatabases] = useState(false);
   const messagesEndRef = useRef(null);
 
   const scrollToBottom = () => {
@@ -292,6 +295,7 @@ function App() {
     loadSettings();
     loadTables();
     loadDatabaseInfo();
+    loadDatabases();
   }, []);
 
   const loadSettings = async () => {
@@ -321,12 +325,24 @@ function App() {
 
   const loadDatabaseInfo = async () => {
     try {
-      const response = await fetch('/health');
+      const response = await fetch('/api/health');
       const data = await response.json();
       setDatabaseInfo(data);
     } catch (error) {
       console.error('Failed to load database info:', error);
       setDatabaseInfo({ status: 'unknown', databaseType: 'Unknown' });
+    }
+  };
+
+  const loadDatabases = async () => {
+    try {
+      const response = await fetch('/api/databases');
+      const data = await response.json();
+      if (data.success) {
+        setDatabases(data.databases);
+      }
+    } catch (error) {
+      console.error('Failed to load databases:', error);
     }
   };
 
@@ -350,6 +366,45 @@ function App() {
     } catch (error) {
       console.error('Failed to save settings:', error);
       alert('Failed to save settings');
+    }
+  };
+
+  const toggleTable = async (tableName) => {
+    setTogglingTable(tableName);
+    try {
+      const currentEnabled = (settings.enabled_tables || '').split(',').map(t => t.trim().toLowerCase()).filter(Boolean);
+      let nextEnabled;
+      const isCurrentlyEnabled = currentEnabled.includes(tableName.toLowerCase());
+
+      if (isCurrentlyEnabled) {
+        nextEnabled = currentEnabled.filter(t => t !== tableName.toLowerCase());
+      } else {
+        nextEnabled = [...new Set([...currentEnabled, tableName.toLowerCase()])];
+      }
+
+      const newSettings = { ...settings, enabled_tables: nextEnabled.join(',') };
+
+      const response = await fetch('/api/settings', {
+        method: 'PUT',
+        headers: {
+          'Content-Type': 'application/json',
+        },
+        body: JSON.stringify({ settings: newSettings }),
+      });
+
+      const data = await response.json();
+      if (data.success) {
+        setSettings(newSettings);
+        setTempSettings(newSettings);
+        await loadTables();
+      } else {
+        alert('Failed to update table: ' + data.error);
+      }
+    } catch (error) {
+      console.error('Failed to toggle table:', error);
+      alert('Failed to update table');
+    } finally {
+      setTogglingTable(null);
     }
   };
 
@@ -396,7 +451,7 @@ function App() {
     } catch (error) {
       console.error('Chat error:', error);
       let friendlyMessage = "I'm having trouble processing your request right now. Please try again.";
-      
+
       // Provide more specific friendly messages for common errors
       if (error.message.includes('fetch')) {
         friendlyMessage = "I can't connect to the server right now. Please check your connection and try again.";
@@ -409,7 +464,7 @@ function App() {
       } else if (error.message.includes('JSON')) {
         friendlyMessage = "I received an unexpected response. Please try your question again.";
       }
-      
+
       const errorMessage = {
         id: Date.now() + 1,
         type: 'ai',
@@ -485,35 +540,118 @@ function App() {
         <div className="grid grid-cols-1 lg:grid-cols-4 gap-6">
           {/* Sidebar */}
           <div className="lg:col-span-1 space-y-4">
-            {/* Database Info */}
-            <div className="bg-white rounded-lg shadow p-4">
+            {/* Database Connection Info */}
+            <div className="bg-white rounded-lg shadow p-4 border-l-4 border-primary-600">
               <div className="flex items-center space-x-2 mb-3">
                 <Database className="w-5 h-5 text-primary-600" />
-                <h3 className="font-semibold text-gray-900">Database Tables</h3>
+                <h3 className="font-semibold text-gray-900">Database Connection</h3>
               </div>
-              <div className="space-y-2">
-                {tables.map((table) => (
-                  <div key={table.name} className={`flex justify-between items-center text-sm p-1 rounded ${table.enabled ? 'bg-primary-50' : ''}`}>
-                    <span className={`font-medium ${table.enabled ? 'text-primary-700' : 'text-gray-500'}`}>
-                      {table.name}
-                      {table.enabled && <span className="ml-2 text-[10px] bg-primary-100 text-primary-600 px-1 rounded">Enabled</span>}
+              <div className="space-y-2 text-sm">
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Type:</span>
+                  <span className="font-medium text-gray-900">{databaseInfo.databaseType || 'Loading...'}</span>
+                </div>
+                <div className="flex items-center justify-between">
+                  <span className="text-gray-600">Status:</span>
+                  <div className="flex items-center space-x-1">
+                    <span className={`w-2 h-2 rounded-full ${databaseInfo.status === 'healthy' ? 'bg-green-500' : 'bg-red-500'}`}></span>
+                    <span className={`font-medium ${databaseInfo.status === 'healthy' ? 'text-green-600' : 'text-red-600'}`}>
+                      {databaseInfo.status === 'healthy' ? 'Connected' : 'Disconnected'}
                     </span>
-                    <span className="text-gray-400 text-xs">{table.count} rows</span>
                   </div>
-                ))}
+                </div>
+                {databases.length > 0 && (
+                  <div className="pt-2 border-t border-gray-200">
+                    <button
+                      onClick={() => setShowDatabases(!showDatabases)}
+                      className="flex items-center justify-between w-full text-left hover:text-primary-600 transition-colors"
+                    >
+                      <span className="text-gray-600">Available Databases:</span>
+                      <span className="text-xs text-primary-600">
+                        {showDatabases ? '▼' : '▶'} {databases.length}
+                      </span>
+                    </button>
+                    {showDatabases && (
+                      <div className="mt-2 space-y-1 max-h-40 overflow-y-auto">
+                        {databases.map((db) => (
+                          <div key={db.name} className={`flex items-center justify-between text-xs p-1.5 rounded ${db.isCurrent ? 'bg-primary-50 border border-primary-200' : 'bg-gray-50'
+                            }`}>
+                            <span className={db.isCurrent ? 'font-medium text-primary-900' : 'text-gray-700'}>
+                              {db.name}
+                            </span>
+                            {db.isCurrent && (
+                              <span className="text-[10px] bg-primary-600 text-white px-1.5 py-0.5 rounded">
+                                Current
+                              </span>
+                            )}
+                          </div>
+                        ))}
+                      </div>
+                    )}
+                  </div>
+                )}
+              </div>
+            </div>
+
+            {/* Database Tables with Quick Toggle */}
+            <div className="bg-white rounded-lg shadow p-4">
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center space-x-2">
+                  <Table className="w-5 h-5 text-primary-600" />
+                  <h3 className="font-semibold text-gray-900">Tables</h3>
+                </div>
+                <span className="text-xs text-gray-500">{tables.filter(t => t.enabled).length}/{tables.length} enabled</span>
+              </div>
+              <div className="space-y-2 max-h-80 overflow-y-auto">
+                {tables.map((table) => {
+                  const isToggling = togglingTable === table.name;
+                  return (
+                    <div key={table.name} className={`flex items-center justify-between text-sm p-2 rounded border transition-all ${table.enabled
+                      ? 'bg-primary-50 border-primary-200'
+                      : 'bg-gray-50 border-gray-200 hover:border-gray-300'
+                      }`}>
+                      <div className="flex items-center space-x-2 flex-1">
+                        <button
+                          onClick={() => toggleTable(table.name)}
+                          disabled={isToggling}
+                          className={`w-4 h-4 rounded border-2 flex items-center justify-center transition-all ${table.enabled
+                            ? 'bg-primary-600 border-primary-600'
+                            : 'bg-white border-gray-300 hover:border-primary-400'
+                            } ${isToggling ? 'opacity-50 cursor-not-allowed' : 'cursor-pointer'}`}
+                          title={table.enabled ? 'Click to disable' : 'Click to enable'}
+                        >
+                          {table.enabled && (
+                            <Check className="w-3 h-3 text-white" />
+                          )}
+                        </button>
+                        <div className="flex flex-col flex-1">
+                          <span className={`font-medium ${table.enabled ? 'text-primary-900' : 'text-gray-700'
+                            }`}>
+                            {table.name}
+                          </span>
+                          <span className="text-[10px] text-gray-400">{table.count} rows</span>
+                        </div>
+                      </div>
+                      {table.enabled && (
+                        <span className="text-[10px] bg-primary-100 text-primary-600 px-2 py-0.5 rounded font-medium">
+                          Active
+                        </span>
+                      )}
+                    </div>
+                  );
+                })}
+              </div>
+              <div className="mt-3 pt-3 border-t border-gray-200">
+                <p className="text-xs text-gray-500">
+                  💡 Click checkboxes to quickly add/remove tables from AI context
+                </p>
               </div>
             </div>
 
             {/* Current Settings */}
             <div className="bg-white rounded-lg shadow p-4">
-              <h3 className="font-semibold text-gray-900 mb-3">Current Settings</h3>
+              <h3 className="font-semibold text-gray-900 mb-3">Settings</h3>
               <div className="space-y-2 text-sm">
-                <div>
-                  <span className="font-medium text-gray-700">Enabled Tables:</span>
-                  <div className="text-gray-600 mt-1">
-                    {settings.enabled_tables?.split(',').map(t => t.trim()).join(', ') || 'None'}
-                  </div>
-                </div>
                 <div>
                   <span className="font-medium text-gray-700">Max Results:</span>
                   <span className="text-gray-600 ml-2">{settings.max_results || '100'}</span>
@@ -524,7 +662,7 @@ function App() {
                 </div>
                 <div>
                   <span className="font-medium text-gray-700">Schema Info:</span>
-                  <span className="text-gray-600 ml-2">{settings.enable_schema_info === 'true' ? 'Enabled' : 'Disabled'}</span>
+                  <span className="text-gray-600 ml-2">{settings.enable_schema_info === 'true' ? 'Yes' : 'No'}</span>
                 </div>
               </div>
             </div>
@@ -548,18 +686,16 @@ function App() {
                     </div>
                   </div>
                 )}
-                
+
                 {messages.map((message) => (
                   <div
                     key={message.id}
-                    className={`message-enter ${
-                      message.type === 'user' ? 'flex justify-end' : 'flex justify-start'
-                    }`}
+                    className={`message-enter ${message.type === 'user' ? 'flex justify-end' : 'flex justify-start'
+                      }`}
                   >
                     <div
-                      className={`chat-message max-w-4xl ${
-                        message.type === 'user' ? 'user-message' : 'ai-message'
-                      } ${message.isError ? 'bg-red-100' : ''}`}
+                      className={`chat-message max-w-4xl ${message.type === 'user' ? 'user-message' : 'ai-message'
+                        } ${message.isError ? 'bg-red-100' : ''}`}
                     >
                       <div className="enhanced-response">
                         <ReactMarkdown
@@ -580,7 +716,7 @@ function App() {
                     </div>
                   </div>
                 ))}
-                
+
                 {isLoading && (
                   <div className="flex justify-start">
                     <div className="chat-message ai-message">

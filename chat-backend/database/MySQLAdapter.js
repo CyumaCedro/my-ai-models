@@ -31,11 +31,11 @@ class MySQLAdapter extends DatabaseAdapter {
         reconnect: true,
         multipleStatements: false
       });
-      
+
       // Test connection
       const connection = await this.pool.getConnection();
       connection.release();
-      
+
       console.log(`Connected to MySQL database: ${this.config.database}`);
       return true;
     } catch (error) {
@@ -67,7 +67,7 @@ class MySQLAdapter extends DatabaseAdapter {
 
   async getTableSchema(tableName) {
     const sanitizedTable = this.sanitizeIdentifier(tableName);
-    
+
     // Get column information
     const [columns] = await this.executeQuery(`
       SELECT COLUMN_NAME, DATA_TYPE, IS_NULLABLE, COLUMN_KEY, 
@@ -76,7 +76,7 @@ class MySQLAdapter extends DatabaseAdapter {
       WHERE TABLE_SCHEMA = DATABASE() AND TABLE_NAME = ?
       ORDER BY ORDINAL_POSITION
     `, [sanitizedTable]);
-    
+
     // Get foreign key relationships
     const [foreignKeys] = await this.executeQuery(`
       SELECT COLUMN_NAME, REFERENCED_TABLE_NAME, REFERENCED_COLUMN_NAME
@@ -85,7 +85,7 @@ class MySQLAdapter extends DatabaseAdapter {
         AND TABLE_NAME = ?
         AND REFERENCED_TABLE_NAME IS NOT NULL
     `, [sanitizedTable]);
-    
+
     return {
       tableName: sanitizedTable,
       columns: columns,
@@ -101,7 +101,7 @@ class MySQLAdapter extends DatabaseAdapter {
         AND TABLE_TYPE = 'BASE TABLE'
       ORDER BY TABLE_NAME
     `);
-    
+
     return tables.map(table => ({
       name: table.TABLE_NAME,
       description: table.TABLE_COMMENT || '',
@@ -133,6 +133,19 @@ class MySQLAdapter extends DatabaseAdapter {
   getSampleDataQuery(tableName, limit = 3) {
     const sanitizedTable = this.sanitizeIdentifier(tableName);
     return `SELECT * FROM \`${sanitizedTable}\` LIMIT ${limit}`;
+  }
+
+  async getDatabaseList() {
+    try {
+      const [databases] = await this.pool.query('SHOW DATABASES');
+      return databases.map(db => ({
+        name: db.Database || db.database,
+        isCurrent: db.Database === this.config.database || db.database === this.config.database
+      }));
+    } catch (error) {
+      console.error('Error getting database list:', error);
+      throw error;
+    }
   }
 
   // MySQL-specific query sanitization

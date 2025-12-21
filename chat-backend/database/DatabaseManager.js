@@ -23,12 +23,12 @@ class DatabaseManager {
     try {
       const adapter = this.createAdapter(config);
       await adapter.connect();
-      
+
       const adapterKey = `${config.type || 'mysql'}_${config.host || 'localhost'}_${config.database || 'chatdb'}`;
       this.adapters.set(adapterKey, adapter);
       this.currentAdapter = adapter;
       this.config = config;
-      
+
       console.log(`Database initialized: ${adapter.type} - ${config.database}`);
       return true;
     } catch (error) {
@@ -42,7 +42,7 @@ class DatabaseManager {
    */
   createAdapter(config) {
     const dbType = (config.type || 'mysql').toLowerCase();
-    
+
     switch (dbType) {
       case 'mysql':
         return new MySQLAdapter(config);
@@ -83,14 +83,14 @@ class DatabaseManager {
    */
   async executeSafeQuery(query, settings = {}) {
     const adapter = this.getCurrentAdapter();
-    const enabledTables = settings.enabled_tables ? 
+    const enabledTables = settings.enabled_tables ?
       settings.enabled_tables.split(',').map(t => t.trim()) : [];
     const maxResults = parseInt(settings.max_results) || 100;
 
     try {
       // Validate and sanitize query
       const validatedQuery = adapter.validateSelectQuery(query);
-      
+
       // Extract table names and validate access
       const tablesInQuery = adapter.extractTableNames(validatedQuery);
       const unauthorizedTables = tablesInQuery.filter(
@@ -103,7 +103,7 @@ class DatabaseManager {
 
       // Add LIMIT if not present
       const finalQuery = this.addLimitToQuery(validatedQuery, maxResults);
-      
+
       return await adapter.executeQuery(finalQuery);
     } catch (error) {
       console.error('Query execution error:', error);
@@ -128,48 +128,48 @@ class DatabaseManager {
    */
   async getEnhancedSchema(settings = {}) {
     const adapter = this.getCurrentAdapter();
-    const enabledTables = settings.enabled_tables ? 
+    const enabledTables = settings.enabled_tables ?
       settings.enabled_tables.split(',').map(t => t.trim()) : [];
-    
+
     if (enabledTables.length === 0) return '';
-    
+
     let schema = 'Database Schema (use this to understand data relationships):\n';
-    
+
     for (const table of enabledTables) {
       try {
         const tableName = table.trim();
         const tableSchema = await adapter.getTableSchema(tableName);
         const sampleData = await adapter.getSampleData(tableName, 3);
-        
+
         schema += `\nTable: ${tableName}\n`;
         schema += `Columns:\n`;
-        
+
         tableSchema.columns.forEach(col => {
           const nullable = col.IS_NULLABLE === 'NO' ? 'NOT NULL' : 'NULL';
-          const keyInfo = col.COLUMN_KEY === 'PRI' ? '[PRIMARY KEY]' : 
-                         col.COLUMN_KEY === 'UNI' ? '[UNIQUE]' : 
-                         col.COLUMN_KEY === 'MUL' ? '[INDEXED]' : '';
+          const keyInfo = col.COLUMN_KEY === 'PRI' ? '[PRIMARY KEY]' :
+            col.COLUMN_KEY === 'UNI' ? '[UNIQUE]' :
+              col.COLUMN_KEY === 'MUL' ? '[INDEXED]' : '';
           const comment = col.COLUMN_COMMENT ? `// ${col.COLUMN_COMMENT}` : '';
           const length = col.CHARACTER_MAXIMUM_LENGTH ? `(${col.CHARACTER_MAXIMUM_LENGTH})` : '';
           schema += `  - ${col.COLUMN_NAME}: ${col.DATA_TYPE}${length} ${nullable} ${keyInfo} ${comment}\n`;
         });
-        
+
         if (tableSchema.foreignKeys.length > 0) {
           schema += `Relationships:\n`;
           tableSchema.foreignKeys.forEach(fk => {
             schema += `  - ${fk.COLUMN_NAME} -> ${fk.REFERENCED_TABLE_NAME}.${fk.REFERENCED_COLUMN_NAME}\n`;
           });
         }
-        
+
         if (sampleData.length > 0) {
           schema += `Sample data (${sampleData.length} rows): ${JSON.stringify(sampleData[0])}\n`;
         }
-        
+
       } catch (error) {
         console.error(`Error getting schema for table ${table}:`, error);
       }
     }
-    
+
     return schema;
   }
 
@@ -195,14 +195,14 @@ class DatabaseManager {
   async buildSchemaMap(enabledTables) {
     const adapter = this.getCurrentAdapter();
     const map = {};
-    
+
     if (!enabledTables || enabledTables.length === 0) return map;
-    
+
     for (const table of enabledTables) {
       try {
         const tableName = table.trim();
         const schema = await adapter.getTableSchema(tableName);
-        
+
         map[tableName] = {
           columns: schema.columns.map(c => ({
             name: c.COLUMN_NAME.toLowerCase(),
@@ -215,7 +215,7 @@ class DatabaseManager {
         console.error(`Error building schema for ${table}:`, err);
       }
     }
-    
+
     return map;
   }
 
@@ -226,16 +226,16 @@ class DatabaseManager {
     const text = message.toLowerCase();
     const tokens = text.split(/[^a-z0-9_]+/).filter(Boolean);
     const scores = [];
-    
+
     for (const [table, info] of Object.entries(schemaMap)) {
       let score = 0;
       const tableLower = table.toLowerCase();
-      
+
       // Direct table name mention
       if (tokens.some(t => tableLower.includes(t) || t.includes(tableLower))) {
         score += 5;
       }
-      
+
       // Column name matches
       for (const col of info.columns) {
         if (tokens.some(t => col.name.includes(t) || t.includes(col.name))) {
@@ -249,12 +249,12 @@ class DatabaseManager {
           }
         }
       }
-      
+
       if (score > 0) {
         scores.push({ table, score });
       }
     }
-    
+
     scores.sort((a, b) => b.score - a.score);
     return scores.slice(0, 3).map(s => s.table); // Return top 3 relevant tables
   }
@@ -264,15 +264,15 @@ class DatabaseManager {
    */
   async disconnectAll() {
     const disconnectPromises = [];
-    
+
     for (const [key, adapter] of this.adapters) {
       disconnectPromises.push(adapter.disconnect());
     }
-    
+
     await Promise.all(disconnectPromises);
     this.adapters.clear();
     this.currentAdapter = null;
-    
+
     console.log('All database connections closed');
   }
 
@@ -282,6 +282,22 @@ class DatabaseManager {
   getDatabaseType() {
     const adapter = this.getCurrentAdapter();
     return adapter.getDatabaseType();
+  }
+
+  /**
+   * Get list of all databases
+   */
+  async getDatabaseList() {
+    try {
+      const adapter = this.getCurrentAdapter();
+      if (typeof adapter.getDatabaseList === 'function') {
+        return await adapter.getDatabaseList();
+      }
+      return [];
+    } catch (error) {
+      console.error('Error getting database list:', error);
+      return [];
+    }
   }
 
   /**

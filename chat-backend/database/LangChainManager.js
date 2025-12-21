@@ -1,6 +1,6 @@
 const { ChatOllama } = require("@langchain/ollama");
-const { SqlDatabase } = require("langchain/sql_db");
-const { createSqlAgent, SqlToolkit } = require("langchain/agents/toolkits/sql");
+const { SqlDatabase } = require("@langchain/community/sql_db");
+const { createSqlAgent, SqlToolkit } = require("@langchain/community/agents/toolkits/sql");
 const { DataSource } = require("typeorm");
 
 /**
