@@ -1034,28 +1034,35 @@ const { message, sessionId } = value;
       aiResponse = "I'm here to help! Could you please rephrase your question or try asking about something specific?";
     }
     
-// Save to chat history (simplified to avoid database errors during general questions)
-    if (message.toLowerCase().includes('chemistry') || message.toLowerCase().includes('maths')) {
-      // For general questions, skip database save to avoid crashes
-      console.log('Skipping database save for general question');
-    } else {
-      try {
-        await pool.execute(
-          `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
-             VALUES (?, ?, ?, ?)`,
-          [sessionId, message, fallbackResponse, 'error']
-        );
-      } catch (error) {
-        console.error('Chat history save error:', error);
-      }
-    }
+    // Save to chat history
+    await pool.execute(
+      `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+       VALUES (?, ?, ?, ?)`,
+      [sessionId, message, aiResponse, tablesAccessed.join(',')]
+    );
     
     sendJsonResponse(res, 200, {
       success: true,
-      response: fallbackResponse,
-      sessionId
+      response: aiResponse,
+      sessionId,
+      queryResults: queryResults ? queryResults.slice(0, 100) : null, // Limit results sent to client
+      tablesAccessed
     });
-  }
+    
+} catch (error) {
+    console.error('Chat error:', error);
+    
+    // Always try to return a valid response, even on error
+    let fallbackResponse = "I'm having trouble processing your request right now. Please try again in a moment.";
+    
+    // If it's an Ollama/AI error, try a simple general answer
+    if (error.message.includes('Ollama') || error.message.includes('timeout') || error.message.includes('ECONNREFUSED')) {
+      try {
+        console.log('Attempting emergency fallback response');
+        fallbackResponse = "I'm experiencing some technical difficulties, but I'm here to help. Could you try asking your question again?";
+      } catch (fallbackErr) {
+        console.error('Emergency fallback failed:', fallbackErr);
+      }
     }
     
     // Save the error interaction to history
