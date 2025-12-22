@@ -48,11 +48,38 @@ function sendJsonResponse(res, statusCode, data) {
     res.setHeader('Content-Type', 'application/json; charset=utf-8');
     res.status(statusCode);
     res.send(jsonString);
-  } catch (error) {
-    console.error('JSON serialization error:', error);
-    res.status(500).json({
-      success: false,
-      error: 'Internal server error: Unable to serialize response'
+} catch (error) {
+    console.error('Chat error:', error);
+    
+    // Always try to return a valid response, even on error
+    let fallbackResponse = "I'm having trouble processing your request right now. Please try again in a moment.";
+    
+    // If it's an Ollama/AI error, try a simple general answer
+    if (error.message.includes('Ollama') || error.message.includes('timeout') || error.message.includes('ECONNREFUSED')) {
+      try {
+        console.log('Attempting emergency fallback response');
+        fallbackResponse = "I'm experiencing some technical difficulties, but I'm here to help. Could you try asking your question again?";
+      } catch (fallbackErr) {
+        console.error('Emergency fallback failed:', fallbackErr);
+      }
+    }
+    
+    // Save error interaction to history
+    try {
+      await pool.execute(
+        `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+         VALUES (?, ?, ?, ?)`,
+        [sessionId, message, fallbackResponse, 'error']
+      );
+    } catch (historyErr) {
+      console.error('Failed to save error to history:', historyErr);
+    }
+    
+    sendJsonResponse(res, 200, {
+      success: true,
+      response: fallbackResponse,
+      sessionId,
+      isError: true
     });
   }
 }
@@ -348,8 +375,22 @@ ${context}`;
     req.end(body);
   });
 
-  const parsed = JSON.parse(responseData);
-  return parsed?.message?.content || '';
+let parsed;
+  try {
+    parsed = JSON.parse(responseData);
+  } catch (parseErr) {
+    console.error('JSON parse error in callOllama:', parseErr);
+    console.error('Response data:', responseData);
+    throw new Error('Invalid response from AI service');
+  }
+  
+  const content = parsed?.message?.content || '';
+  if (!content) {
+    console.error('Empty content from Ollama:', parsed);
+    throw new Error('Empty response from AI service');
+  }
+  
+  return content;
 }
 
 function stripTechnicalContent(text) {
@@ -443,11 +484,25 @@ Please analyze this data and provide a clear, helpful answer to the question.`;
     req.setTimeout(120000, () => {
       req.destroy(new Error('Timeout'));
     });
-    req.end(body);
+req.end(body);
   });
 
-  const parsed = JSON.parse(responseData);
-  return stripTechnicalContent(parsed?.message?.content || '');
+  let parsed;
+  try {
+    parsed = JSON.parse(responseData);
+  } catch (parseErr) {
+    console.error('JSON parse error in callGeneralAnswer:', parseErr);
+    console.error('Response data:', responseData);
+    throw new Error('Invalid response from AI service');
+  }
+  
+  const content = parsed?.message?.content || '';
+  if (!content) {
+    console.error('Empty content from Ollama in callGeneralAnswer:', parsed);
+    throw new Error('Empty response from AI service');
+  }
+  
+  return stripTechnicalContent(content);
 }
 
 async function callGeneralAnswer(prompt) {
@@ -455,8 +510,17 @@ async function callGeneralAnswer(prompt) {
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
   const model = settings.ollama_model || 'deepseek-coder-v2';
   
-  const systemPrompt = `You are a helpful assistant. Answer questions clearly and concisely.
-Keep responses natural and conversational. No technical jargon unless specifically asked.`;
+  const systemPrompt = `You are a helpful assistant for general knowledge questions. Answer clearly and concisely.
+
+IMPORTANT: This is a general conversation, NOT a database query. 
+- Answer the question based on your general knowledge
+- Do NOT mention databases, tables, or technical information
+- Keep responses natural and conversational
+- If asked about chemistry, physics, history, or any academic subject, provide a helpful educational response
+
+User question: "${prompt}"
+
+Please provide a direct, helpful answer to the question above.`;
 
   const payload = {
     model: model,
@@ -499,11 +563,25 @@ Keep responses natural and conversational. No technical jargon unless specifical
     req.setTimeout(120000, () => {
       req.destroy(new Error('Timeout'));
     });
-    req.end(body);
+req.end(body);
   });
 
-  const parsed = JSON.parse(responseData);
-  return stripTechnicalContent(parsed?.message?.content || '');
+  let parsed;
+  try {
+    parsed = JSON.parse(responseData);
+  } catch (parseErr) {
+    console.error('JSON parse error in summarizeWithData:', parseErr);
+    console.error('Response data:', responseData);
+    throw new Error('Invalid response from AI service during summarization');
+  }
+  
+  const content = parsed?.message?.content || '';
+  if (!content) {
+    console.error('Empty content from Ollama in summarizeWithData:', parsed);
+    throw new Error('Empty response from AI service during summarization');
+  }
+  
+  return stripTechnicalContent(content);
 }
 
 async function buildSchemaMap(enabledTables) {
@@ -734,9 +812,45 @@ app.post('/api/chat', async (req, res) => {
       return sendJsonResponse(res, 400, { success: false, error: error.details[0].message });
     }
 
-    const { message, sessionId } = value;
+const { message, sessionId } = value;
     const settings = await getSettings();
     const enableSchema = settings.enable_schema_info === 'true';
+    
+    // Quick check for general knowledge questions that don't need data
+    const generalTopics = [
+      'chemistry', 'physics', 'biology', 'history', 'geography', 'mathematics', 
+      'literature', 'art', 'music', 'philosophy', 'psychology', 'economics',
+      'what is', 'who was', 'when did', 'explain', 'define', 'meaning of'
+    ];
+    
+    const messageLower = message.toLowerCase().trim();
+    const isGeneralQuestion = generalTopics.some(topic => 
+      messageLower.includes(topic.toLowerCase())
+    );
+    
+    console.log('General topic check - Message:', message);
+    console.log('General topic check - Is general:', isGeneralQuestion);
+    
+    if (isGeneralQuestion) {
+      console.log('Detected general question, calling general answer directly');
+      try {
+        const generalResponse = await callGeneralAnswer(message);
+        await pool.execute(
+          `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+           VALUES (?, ?, ?, ?)`,
+          [sessionId, message, generalResponse, '']
+        );
+        
+        return sendJsonResponse(res, 200, {
+          success: true,
+          response: generalResponse,
+          sessionId
+        });
+      } catch (generalError) {
+        console.error('General answer failed:', generalError);
+        // Continue with normal flow if general answer fails
+      }
+    }
     
     let context = '';
     let tablesAccessed = [];
@@ -752,11 +866,22 @@ app.post('/api/chat', async (req, res) => {
     const dataKeywords = [
       'show', 'list', 'get', 'find', 'search', 'count', 'how many', 'how much',
       'what', 'when', 'where', 'who', 'which', 'display', 'give me', 'tell me',
-      'average', 'total', 'sum', 'maximum', 'minimum', 'latest', 'recent'
+      'average', 'total', 'sum', 'maximum', 'minimum', 'latest', 'recent',
+      'customers', 'products', 'orders', 'order_items', 'table', 'database'
     ];
+    
+    // Also check if message contains table names
+    const tableNames = ['customers', 'products', 'orders', 'order_items', 'chat_history', 'chat_settings'];
+    const hasTableReference = tableNames.some(table => 
+      message.toLowerCase().includes(table)
+    );
+    
     const isDataRequest = dataKeywords.some(keyword => 
       message.toLowerCase().includes(keyword)
-    );
+    ) || hasTableReference;
+    
+    console.log('Message:', message);
+    console.log('Is data request:', isDataRequest, 'Has table reference:', hasTableReference);
     
     let aiResponse;
     let queryResults = null;
@@ -892,14 +1017,21 @@ app.post('/api/chat', async (req, res) => {
     // Clean up response
     aiResponse = stripTechnicalContent(aiResponse);
     
-    // Fallback to general answer if needed
+// Fallback to general answer if needed
     if (!aiResponse || aiResponse.trim() === '') {
       try {
+        console.log('Using general answer fallback for:', message);
         aiResponse = await callGeneralAnswer(message);
+        console.log('General answer response:', aiResponse);
       } catch (genErr) {
         console.error('General answer error:', genErr);
         aiResponse = "I apologize, but I'm having trouble generating a response. Could you please rephrase your question?";
       }
+    }
+
+    // Final fallback - ensure we always have a response
+    if (!aiResponse || aiResponse.trim() === '') {
+      aiResponse = "I'm here to help! Could you please rephrase your question or try asking about something specific?";
     }
     
     // Save to chat history
@@ -917,11 +1049,38 @@ app.post('/api/chat', async (req, res) => {
       tablesAccessed
     });
     
-  } catch (error) {
+} catch (error) {
     console.error('Chat error:', error);
-    sendJsonResponse(res, 500, { 
-      success: false, 
-      error: 'An error occurred while processing your request. Please try again.' 
+    
+    // Always try to return a valid response, even on error
+    let fallbackResponse = "I'm having trouble processing your request right now. Please try again in a moment.";
+    
+    // If it's an Ollama/AI error, try a simple general answer
+    if (error.message.includes('Ollama') || error.message.includes('timeout') || error.message.includes('ECONNREFUSED')) {
+      try {
+        console.log('Attempting emergency fallback response');
+        fallbackResponse = "I'm experiencing some technical difficulties, but I'm here to help. Could you try asking your question again?";
+      } catch (fallbackErr) {
+        console.error('Emergency fallback failed:', fallbackErr);
+      }
+    }
+    
+    // Save the error interaction to history
+    try {
+      await pool.execute(
+        `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+         VALUES (?, ?, ?, ?)`,
+        [sessionId, message, fallbackResponse, 'error']
+      );
+    } catch (historyErr) {
+      console.error('Failed to save error to history:', historyErr);
+    }
+    
+    sendJsonResponse(res, 200, {
+      success: true,
+      response: fallbackResponse,
+      sessionId,
+      isError: true
     });
   }
 });
