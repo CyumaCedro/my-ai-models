@@ -2,7 +2,7 @@
   "name": "chat-frontend",
   "version": "1.0.0",
   "private": true,
-  "dependencies": {
+"dependencies": {
     "@headlessui/react": "^1.7.17",
     "@testing-library/jest-dom": "^5.17.0",
     "@testing-library/react": "^13.4.0",
@@ -16,6 +16,7 @@
     "postcss": "^8.4.32",
     "react": "^18.2.0",
     "react-dom": "^18.2.0",
+    "react-dropzone": "^14.2.3",
     "react-markdown": "^9.0.1",
     "react-scripts": "5.0.1",
     "react-syntax-highlighter": "^16.1.0",

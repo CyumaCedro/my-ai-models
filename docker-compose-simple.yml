@@ -1,0 +1,136 @@
+services:
+  # Ollama Service for AI and Embeddings
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_ORIGINS=*
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:11434/api/tags"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # MySQL Database
+  mysql:
+    image: mysql:8.0.2
+    container_name: mysql-db
+    command: mysqld --sql_mode="" --default-authentication-plugin=mysql_native_password --collation-server=utf8mb4_unicode_520_ci --character-set-server=utf8 --collation-server=utf8_slovenian_ci --init-connect=SET NAMES UTF8; --innodb-flush-log-at-trx-commit=0 --max_connections=250000 --innodb-buffer-pool-size=1G --sort_buffer_size=1073741824
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=chatdb
+      - MYSQL_USER=chatuser
+      - MYSQL_PASSWORD=chatpass
+    volumes:
+      - mysql_data:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db/:/var/db/
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD -e SELECT 1 || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: always
+
+  # Chat Backend
+  chat-backend:
+    build:
+      context: ./chat-backend
+      dockerfile: Dockerfile.simple
+    container_name: chat-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=development
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=chatdb
+      - MYSQL_USER=chatuser
+      - MYSQL_PASSWORD=chatpass
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=deepseek-coder-v2
+      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      - ENABLE_RAG=true
+      - MAX_CONTEXT_LENGTH=4000
+      - SIMILARITY_THRESHOLD=0.7
+      - OLLAMA_REQUEST_TIMEOUT=300000
+      - OLLAMA_KEEP_ALIVE=600
+      - CACHE_DURATION=60000
+      - MAX_RESULTS=100
+      - CONNECTION_LIMIT=10
+    volumes:
+      - ./chat-backend:/app
+      - ./chat-backend:/app/node_modules
+      - backend_uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+    restart: always
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  # ChromaDB Vector Database
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8001:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - CHROMA_LOG_LEVEL=INFO
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: always
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+  # Chat Frontend
+  chat-frontend:
+    build:
+      context: ./chat-frontend
+      dockerfile: Dockerfile
+    container_name: chat-frontend
+    ports:
+      - "3100:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    volumes:
+      - ./chat-frontend:/app
+      - ./chat-frontend:/app/node_modules
+    depends_on:
+      chat-backend:
+        condition: service_started
+    restart: always
+
+volumes:
+  chroma_data:
+    driver: local
+  mysql_data:
+    driver: local
+  backend_uploads:
+    driver: local
+  ollama_data:
+    driver: local

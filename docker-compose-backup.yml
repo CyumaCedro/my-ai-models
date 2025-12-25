@@ -1,0 +1,253 @@
+services:
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama_v1
+    ports:
+      - "11434:11434"
+    volumes:
+      - ollama_data:/root/.ollama
+    environment:
+      # CRITICAL: Enable GPU acceleration
+      - NVIDIA_VISIBLE_DEVICES=all
+      - NVIDIA_DRIVER_CAPABILITIES=compute,utility
+      
+      # Parallel processing - increased for better throughput
+      - OLLAMA_NUM_PARALLEL=4
+      - OLLAMA_MAX_LOADED_MODELS=1
+      - OLLAMA_KEEP_ALIVE=10m
+      - OLLAMA_ORIGINS=*
+      
+      # GPU memory management - optimized for 30GB GPU
+      - OLLAMA_MAX_VRAM=26000000000      # Use 26GB (leave 4GB overhead)
+      - OLLAMA_GPU_OVERHEAD=1000000000   # Reduced overhead
+      - OLLAMA_NUM_GPU=1
+      
+      # CPU threads - match your CPU cores
+      - OLLAMA_NUM_THREAD=16             # Increase based on your CPU
+      
+      # TOKEN SETTINGS - optimized for performance
+      - OLLAMA_NUM_CTX=4096              # Reduced context for faster processing
+      - OLLAMA_NUM_BATCH=512             # Optimized batch size
+      - OLLAMA_NUM_PREDICT=2048
+      
+      # PERFORMANCE TUNING
+      - OLLAMA_FLASH_ATTENTION=1         # Enable flash attention
+      - OLLAMA_KV_CACHE_TYPE=f16         # Use FP16 for KV cache (faster)
+      - OLLAMA_USE_MMAP=false            # Disable mmap for better GPU utilization
+      - OLLAMA_USE_MLOCK=true            # Keep model in memory
+      
+    healthcheck:
+      test: ["CMD", "sh", "-c", "curl -s http://localhost:11434/api/tags >/dev/null 2>&1 || ollama list >/dev/null 2>&1"]
+      interval: 5s
+      timeout: 3s
+      retries: 20
+    restart: always
+    deploy:
+      resources:
+        reservations:
+          devices:
+            - driver: nvidia
+              count: 1
+              capabilities: [gpu]
+        limits:
+          memory: 16G                    # Increased memory limit
+    # CRITICAL: Use host network for better performance (optional)
+    # network_mode: host
+    ulimits:
+      memlock:
+        soft: -1
+        hard: -1
+    ipc: host                            # Shared memory for better GPU communication
+
+  ollama-webui:
+    image: ghcr.io/open-webui/open-webui:main
+    container_name: ollama-webui
+    ports:
+      - "3000:8080"
+    environment:
+      - OLLAMA_BASE_URL=http://ollama:11434
+      - WEBUI_AUTH=true
+      - WEBUI_SECRET_KEY=your-secret-key-here
+    volumes:
+      - ollama_webui_data:/app/backend/data
+    depends_on:
+      ollama:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+
+  ai-ops:
+    image: mcr.microsoft.com/powershell:lts-debian-11
+    container_name: ai-ops
+    working_dir: /workspace
+    command: pwsh -File /workspace/scripts/ops-server.ps1 -Port 5050
+    volumes:
+      - .:/workspace
+    ports:
+      - "5050:5050"
+    depends_on:
+      - ollama
+      - ollama-webui
+    restart: always
+
+ollama-init:
+    image: ollama/ollama:latest
+    container_name: ollama-init
+    depends_on:
+      ollama:
+        condition: service_healthy
+    environment:
+      - OLLAMA_HOST=http://ollama:11434
+    entrypoint: /bin/sh
+    command: >
+      sh -c "echo 'Waiting for Ollama to become ready...';
+      until ollama list >/dev/null 2>&1; 
+      do echo 'Still waiting...'; 
+      sleep 2; 
+      done;
+      echo 'Pulling optimized model...';
+      ollama pull deepseek-coder-v2:16b-lite-instruct-q4_K_M;
+      echo 'Model ready!'"
+    restart: "no"
+
+mysql:
+    image: mysql:8.0.2
+    container_name: mysql-db
+    command: mysqld --sql_mode="" --default-authentication-plugin=mysql_native_password --collation-server=utf8mb4_unicode_520_ci --character-set-server=utf8 --collation-server=utf8_slovenian_ci --init-connect='SET NAMES UTF8;' --innodb-flush-log-at-trx-commit=0 --max_connections=250000 --innodb-buffer-pool-size=1G --sort_buffer_size=1073741824
+
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=chatdb
+      - MYSQL_USER=chatuser
+      - MYSQL_PASSWORD=chatpass
+    volumes:
+      - mysql_datau:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db/:/var/db/
+    healthcheck:
+      test: ["CMD-SHELL", "mysql -h 127.0.0.1 -uroot -p$$MYSQL_ROOT_PASSWORD -e 'SELECT 1' || exit 1"]
+      interval: 10s
+      timeout: 10s
+      retries: 30
+      start_period: 30s
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  # ChromaDB Vector Database
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8001:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - CHROMA_LOG_LEVEL=INFO
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    healthcheck:
+      test: ["CMD", "curl", "-f", "http://localhost:8000/api/v1/heartbeat"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 40s
+
+chat-backend:
+    build:
+      context: ./chat-backend
+      dockerfile: Dockerfile
+    container_name: chat-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=development
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=chatdb
+      - MYSQL_USER=chatuser
+      - MYSQL_PASSWORD=chatpass
+      - OLLAMA_URL=http://ollama:11434
+      - OLLAMA_MODEL=deepseek-coder-v2:16b-lite-instruct-q4_K_M
+      
+      # RAG Configuration
+      - CHROMA_URL=http://chromadb:8000
+      - OPENAI_API_KEY=${OPENAI_API_KEY:-your-openai-api-key-here}
+      - ENABLE_RAG=true
+      - MAX_CONTEXT_LENGTH=4000
+      - SIMILARITY_THRESHOLD=0.7
+      
+      # Backend performance
+      - OLLAMA_REQUEST_TIMEOUT=300000
+      - OLLAMA_KEEP_ALIVE=600
+      - CACHE_DURATION=60000
+      - MAX_RESULTS=100
+      - CONNECTION_LIMIT=10
+    volumes:
+      - ./chat-backend:/app
+      - /app/node_modules
+      - backend_uploads:/app/uploads
+    depends_on:
+      mysql:
+        condition: service_healthy
+      ollama:
+        condition: service_healthy
+      chromadb:
+        condition: service_healthy
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    healthcheck:
+      test: ["CMD", "node", "-e", "require('http').get('http://127.0.0.1:8000/health', (res) => { process.exit(res.statusCode === 200 ? 0 : 1) }).on('error', () => process.exit(1))"]
+      interval: 30s
+      timeout: 10s
+      retries: 3
+      start_period: 15s
+
+  chat-frontend:
+    build:
+      context: ./chat-frontend
+      dockerfile: Dockerfile
+    container_name: chat-frontend
+    ports:
+      - "3100:3000"
+    environment:
+      - REACT_APP_API_URL=http://localhost:8000
+    volumes:
+      - ./chat-frontend:/app
+      - /app/node_modules
+    depends_on:
+      chat-backend:
+        condition: service_started
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  ollama_data:
+    driver: local
+  ollama_webui_data:
+    driver: local
+  mysql_datau:
+    driver: local
+  chroma_data:
+    driver: local
+  backend_uploads:
+    driver: local
