@@ -1,11 +1,12 @@
 import React, { useState, useEffect, useRef } from 'react';
-import { Send, Settings, Database, MessageSquare, Trash2, Save, X, Copy, Check, ExternalLink, Image as ImageIcon, Table } from 'lucide-react';
+import { Send, Settings, Database, MessageSquare, Trash2, Save, X, Copy, Check, ExternalLink, Image as ImageIcon, Table, Shield } from 'lucide-react';
 import ReactMarkdown from 'react-markdown';
 import remarkGfm from 'remark-gfm';
 import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { format } from 'date-fns';
+// import AdminInterface from './AdminInterface';
 import 'katex/dist/katex.min.css';
 
 function App() {
@@ -266,7 +267,7 @@ function App() {
     ),
   };
 
-  const [messages, setMessages] = useState([]);
+const [messages, setMessages] = useState([]);
   const [inputMessage, setInputMessage] = useState('');
   const [isLoading, setIsLoading] = useState(false);
   const [sessionId, setSessionId] = useState('');
@@ -279,6 +280,14 @@ const [databaseInfo, setDatabaseInfo] = useState({ status: 'loading', databaseTy
   const [databases, setDatabases] = useState([]);
   const [showDatabases, setShowDatabases] = useState(false);
   const messagesEndRef = useRef(null);
+  
+  // User context state
+  const [userContext, setUserContext] = useState({ name: '', email: '' });
+  const [showUserSetup, setShowUserSetup] = useState(false);
+  const [isUserConfigured, setIsUserConfigured] = useState(false);
+  
+  // Admin interface state
+  const [showAdmin, setShowAdmin] = useState(false);
 
   const scrollToBottom = () => {
     messagesEndRef.current?.scrollIntoView({ behavior: 'smooth' });
@@ -294,6 +303,16 @@ useEffect(() => {
     setSessionId(newSessionId);
     loadSettings();
     loadDatabaseInfo();
+    
+    // Check if user context is stored
+    const storedUserContext = localStorage.getItem('userContext');
+    if (storedUserContext) {
+      const context = JSON.parse(storedUserContext);
+      setUserContext(context);
+      setIsUserConfigured(true);
+    } else {
+      setShowUserSetup(true);
+    }
   }, []);
 
   useEffect(() => {
@@ -318,7 +337,8 @@ useEffect(() => {
 
   const loadSettings = async () => {
     try {
-      const response = await fetch('/api/settings');
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/settings`);
       const data = await response.json();
       if (data.success) {
         setSettings(data.settings);
@@ -329,10 +349,11 @@ useEffect(() => {
     }
   };
 
-const loadTables = async () => {
+ const loadTables = async () => {
     try {
       console.log('Loading tables...');
-      const response = await fetch('/api/tables');
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/tables`);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -353,10 +374,11 @@ const loadTables = async () => {
     }
   };
 
-const loadDatabaseInfo = async () => {
+ const loadDatabaseInfo = async () => {
     try {
       console.log('Loading database info...');
-      const response = await fetch('/api/health');
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/health`);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -374,10 +396,11 @@ const loadDatabaseInfo = async () => {
     }
   };
 
-const loadDatabases = async () => {
+ const loadDatabases = async () => {
     try {
       console.log('Loading databases...');
-      const response = await fetch('/api/databases');
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/databases`);
       if (!response.ok) {
         throw new Error(`HTTP ${response.status}: ${response.statusText}`);
       }
@@ -398,7 +421,8 @@ const loadDatabases = async () => {
 
   const saveSettings = async () => {
     try {
-      const response = await fetch('/api/settings', {
+       const apiUrl = process.env.REACT_APP_API_URL || '';
+       const response = await fetch(`${apiUrl}/api/settings`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -434,7 +458,8 @@ const loadDatabases = async () => {
 
       const newSettings = { ...settings, enabled_tables: nextEnabled.join(',') };
 
-      const response = await fetch('/api/settings', {
+       const apiUrl = process.env.REACT_APP_API_URL || '';
+       const response = await fetch(`${apiUrl}/api/settings`, {
         method: 'PUT',
         headers: {
           'Content-Type': 'application/json',
@@ -458,7 +483,7 @@ const loadDatabases = async () => {
     }
   };
 
-  const sendMessage = async () => {
+const sendMessage = async () => {
     if (!inputMessage.trim() || isLoading) return;
 
     const userMessage = {
@@ -472,8 +497,9 @@ const loadDatabases = async () => {
     setInputMessage('');
     setIsLoading(true);
 
-    try {
-      const response = await fetch('/api/chat', {
+     try {
+      const apiUrl = process.env.REACT_APP_API_URL || '';
+      const response = await fetch(`${apiUrl}/api/chat`, {
         method: 'POST',
         headers: {
           'Content-Type': 'application/json',
@@ -481,6 +507,7 @@ const loadDatabases = async () => {
         body: JSON.stringify({
           message: userMessage.content,
           sessionId: sessionId,
+          userContext: userContext,
         }),
       });
 
@@ -535,9 +562,41 @@ const loadDatabases = async () => {
     }
   };
 
-  const clearChat = () => {
+const clearChat = () => {
     setMessages([]);
     setExpandedImages(new Set());
+  };
+
+  const saveUserContext = () => {
+    if (!userContext.name.trim() || !userContext.email.trim()) {
+      alert('Please provide both name and email');
+      return;
+    }
+
+    // Simple email validation
+    const emailRegex = /^[^\s@]+@[^\s@]+\.[^\s@]+$/;
+    if (!emailRegex.test(userContext.email)) {
+      alert('Please provide a valid email address');
+      return;
+    }
+
+    localStorage.setItem('userContext', JSON.stringify(userContext));
+    setIsUserConfigured(true);
+    setShowUserSetup(false);
+  };
+
+  const updateUserContext = () => {
+    localStorage.setItem('userContext', JSON.stringify(userContext));
+  };
+
+  // Check if user is admin (simple password check - in production use proper auth)
+  const checkAdminAccess = () => {
+    const password = prompt('Enter admin password:');
+    if (password === 'admin123') { // Change this in production!
+      setShowAdmin(true);
+    } else if (password !== null) {
+      alert('Incorrect password');
+    }
   };
 
   const TypingIndicator = () => (
@@ -551,20 +610,89 @@ const loadDatabases = async () => {
     </div>
   );
 
-  return (
+return (
     <div className="min-h-screen bg-gray-50">
+      {/* User Setup Modal */}
+      {showUserSetup && (
+        <div className="fixed inset-0 bg-black bg-opacity-50 flex items-center justify-center p-4 z-50">
+          <div className="bg-white rounded-lg shadow-xl max-w-md w-full p-6">
+            <div className="mb-4">
+              <h2 className="text-2xl font-bold text-gray-900">Welcome! 👋</h2>
+              <p className="text-gray-600 mt-2">
+                Please tell us about yourself to personalize your experience
+              </p>
+            </div>
+            
+            <div className="space-y-4">
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Your Name
+                </label>
+                <input
+                  type="text"
+                  value={userContext.name}
+                  onChange={(e) => setUserContext({ ...userContext, name: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  placeholder="Enter your name"
+                />
+              </div>
+              
+              <div>
+                <label className="block text-sm font-medium text-gray-700 mb-1">
+                  Email Address
+                </label>
+                <input
+                  type="email"
+                  value={userContext.email}
+                  onChange={(e) => setUserContext({ ...userContext, email: e.target.value })}
+                  className="w-full px-3 py-2 border border-gray-300 rounded-md focus:outline-none focus:ring-2 focus:ring-primary-500 focus:border-primary-500"
+                  placeholder="your.email@example.com"
+                />
+              </div>
+              
+              <div className="bg-blue-50 p-3 rounded-md">
+                <p className="text-sm text-blue-800">
+                  💡 This information helps me provide more personalized responses and better context for our conversations.
+                </p>
+              </div>
+            </div>
+            
+            <div className="mt-6 flex justify-end">
+              <button
+                onClick={saveUserContext}
+                className="bg-primary-600 text-white px-4 py-2 rounded-md hover:bg-primary-700 transition-colors"
+              >
+                Start Chatting
+              </button>
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Header */}
       <header className="bg-white shadow-sm border-b border-gray-200">
         <div className="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8">
           <div className="flex justify-between items-center h-16">
-            <div className="flex items-center space-x-3">
+<div className="flex items-center space-x-3">
               <MessageSquare className="w-8 h-8 text-primary-600" />
               <div>
-                <h1 className="text-xl font-bold text-gray-900">AI Database Chat</h1>
-                <p className="text-sm text-gray-500">Powered by Ollama & {databaseInfo.databaseType || 'Database'}</p>
+                <h1 className="text-xl font-bold text-gray-900">AI RAG Chat</h1>
+                <p className="text-sm text-gray-500">Powered by Ollama & Vector Database</p>
               </div>
             </div>
-            <div className="flex items-center space-x-2">
+<div className="flex items-center space-x-2">
+              {isUserConfigured && (
+                <div className="hidden sm:flex items-center space-x-2 text-sm text-gray-600 bg-gray-100 px-3 py-1 rounded-full">
+                  <span className="font-medium">{userContext.name}</span>
+                  <button
+                    onClick={() => setShowUserSetup(true)}
+                    className="text-gray-400 hover:text-gray-600"
+                    title="Edit user info"
+                  >
+                    ✏️
+                  </button>
+                </div>
+              )}
               <button
                 onClick={clearChat}
                 className="btn-secondary flex items-center space-x-2"
@@ -572,6 +700,14 @@ const loadDatabases = async () => {
               >
                 <Trash2 className="w-4 h-4" />
                 <span className="hidden sm:inline">Clear</span>
+              </button>
+              <button
+                onClick={checkAdminAccess}
+                className="btn-secondary flex items-center space-x-2"
+                title="Admin Panel"
+              >
+                <Shield className="w-4 h-4" />
+                <span className="hidden sm:inline">Admin</span>
               </button>
               <button
                 onClick={() => setShowSettings(!showSettings)}
@@ -990,9 +1126,15 @@ const loadDatabases = async () => {
                 <span>Save Settings</span>
               </button>
             </div>
-          </div>
+</div>
         </div>
       )}
+
+      {/* Admin Interface - Temporarily disabled */}
+      {/* <AdminInterface 
+        isOpen={showAdmin} 
+        onClose={() => setShowAdmin(false)} 
+      /> */}
     </div>
   );
 }
