@@ -1,0 +1,132 @@
+services:
+  # Ollama Service for AI and Embeddings
+  ollama:
+    image: ollama/ollama:latest
+    container_name: ollama
+    ports:
+      - "11434:11434"
+    environment:
+      - OLLAMA_ORIGINS=*
+    volumes:
+      - ollama_data:/root/.ollama
+    restart: always
+    
+
+  # ChromaDB Vector Database
+  chromadb:
+    image: chromadb/chroma:latest
+    container_name: chromadb
+    ports:
+      - "8001:8000"
+    environment:
+      - CHROMA_SERVER_HOST=0.0.0.0
+      - CHROMA_SERVER_HTTP_PORT=8000
+      - CHROMA_LOG_LEVEL=INFO
+      - ANONYMIZED_TELEMETRY=False
+    volumes:
+      - chroma_data:/chroma/chroma
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 1G
+    
+
+  mysql:
+    image: mysql:8.0.2
+    container_name: mysql-db
+    command: mysqld --sql_mode="" --default-authentication-plugin=mysql_native_password --collation-server=utf8mb4_unicode_520_ci --character-set-server=utf8 --collation-server=utf8_slovenian_ci --init-connect='SET NAMES UTF8;' --innodb-flush-log-at-trx-commit=0 --max_connections=250000 --innodb-buffer-pool-size=1G --sort_buffer_size=1073741824
+    ports:
+      - "3306:3306"
+    environment:
+      - MYSQL_ROOT_PASSWORD=rootpassword
+      - MYSQL_DATABASE=chatdb
+      - MYSQL_USER=chatuser
+      - MYSQL_PASSWORD=chatpass
+    volumes:
+      - mysql_datau:/var/lib/mysql
+      - ./db/init:/docker-entrypoint-initdb.d
+      - ./db/:/var/db/
+    
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 4G
+
+  chat-backend:
+    build:
+      context: ./chat-backend
+      dockerfile: Dockerfile.simple
+    container_name: chat-backend
+    ports:
+      - "8000:8000"
+    environment:
+      - NODE_ENV=development
+      - MYSQL_HOST=mysql
+      - MYSQL_PORT=3306
+      - MYSQL_DATABASE=chatdb
+      - MYSQL_USER=chatuser
+      - MYSQL_PASSWORD=chatpass
+      - OLLAMA_URL=http://host.docker.internal:11434
+      - OLLAMA_MODEL=deepseek-coder-v2
+      # RAG Configuration
+      - CHROMA_URL=http://chromadb:8000
+      - OLLAMA_EMBEDDING_MODEL=nomic-embed-text
+      - ENABLE_RAG=true
+      - MAX_CONTEXT_LENGTH=4000
+      - SIMILARITY_THRESHOLD=0.7
+      # Backend performance
+      - OLLAMA_REQUEST_TIMEOUT=300000
+      - OLLAMA_KEEP_ALIVE=600
+      - CACHE_DURATION=60000
+      - MAX_RESULTS=100
+      - CONNECTION_LIMIT=10
+    volumes:
+      - ./chat-backend:/app
+      - /app/node_modules
+      - backend_uploads:/app/uploads
+    depends_on:
+      - mysql
+      - chromadb
+      - ollama
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 2G
+    
+
+  chat-frontend:
+    build:
+      context: ./chat-frontend
+      dockerfile: Dockerfile
+    container_name: chat-frontend
+    ports:
+      - "3100:3000"
+    environment:
+      - REACT_APP_API_URL=http://chat-backend:8000
+    volumes:
+      - ./chat-frontend:/app
+      - /app/node_modules
+    depends_on:
+      - chat-backend
+    restart: always
+    deploy:
+      resources:
+        limits:
+          memory: 512M
+
+volumes:
+  backend_uploads:
+    driver: local
+  chroma_data:
+    driver: local
+  mysql_datau:
+    driver: local
+  ollama_data:
+    driver: local
+
+networks:
+  default:
+    name: my-ai-models_default
