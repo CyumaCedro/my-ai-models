@@ -6,6 +6,8 @@ const { v4: uuidv4 } = require('uuid');
 const Joi = require('joi');
 const helmet = require('helmet');
 const morgan = require('morgan');
+const bcrypt = require('bcrypt');
+const jwt = require('jsonwebtoken');
 require('dotenv').config();
 const http = require('http');
 const https = require('https');
@@ -56,6 +58,134 @@ function sendJsonResponse(res, statusCode, data) {
     });
   }
 }
+
+// JWT Secret
+const JWT_SECRET = process.env.JWT_SECRET || 'your-secret-key-change-in-production';
+
+// Authentication middleware
+function authenticateToken(req, res, next) {
+  const authHeader = req.headers['authorization'];
+  const token = authHeader && authHeader.split(' ')[1];
+
+  if (!token) {
+    return sendJsonResponse(res, 401, { 
+      success: false, 
+      error: 'Access token required' 
+    });
+  }
+
+  jwt.verify(token, JWT_SECRET, (err, user) => {
+    if (err) {
+      return sendJsonResponse(res, 403, { 
+        success: false, 
+        error: 'Invalid or expired token' 
+      });
+    }
+    req.user = user;
+    next();
+  });
+}
+
+// Admin authentication routes
+app.post('/api/auth/login', async (req, res) => {
+  try {
+    const { username, password } = req.body;
+    
+    if (!username || !password) {
+      return sendJsonResponse(res, 400, {
+        success: false,
+        error: 'Username and password required'
+      });
+    }
+
+    const [users] = await pool.execute(
+      'SELECT id, username, password_hash, email, role FROM admin_users WHERE username = ? AND is_active = TRUE',
+      [username]
+    );
+
+    if (users.length === 0) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: 'Invalid credentials'
+      });
+    }
+
+    const user = users[0];
+    const passwordMatch = await bcrypt.compare(password, user.password_hash);
+    
+    if (!passwordMatch) {
+      return sendJsonResponse(res, 401, {
+        success: false,
+        error: 'Invalid credentials'
+      });
+    }
+
+    // Update last login
+    await pool.execute(
+      'UPDATE admin_users SET last_login = NOW() WHERE id = ?',
+      [user.id]
+    );
+
+    // Generate JWT token
+    const token = jwt.sign(
+      { 
+        id: user.id, 
+        username: user.username, 
+        email: user.email, 
+        role: user.role 
+      },
+      JWT_SECRET,
+      { expiresIn: '24h' }
+    );
+
+    sendJsonResponse(res, 200, {
+      success: true,
+      token,
+      user: {
+        id: user.id,
+        username: user.username,
+        email: user.email,
+        role: user.role
+      }
+    });
+  } catch (error) {
+    console.error('Login error:', error);
+    sendJsonResponse(res, 500, {
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// Get current user info
+app.get('/api/auth/me', authenticateToken, async (req, res) => {
+  try {
+    sendJsonResponse(res, 200, {
+      success: true,
+      user: req.user
+    });
+  } catch (error) {
+    console.error('Auth me error:', error);
+    sendJsonResponse(res, 500, {
+      success: false,
+      error: 'Internal server error'
+    });
+  }
+});
+
+// Logout (client-side token removal)
+app.post('/api/auth/logout', (req, res) => {
+  sendJsonResponse(res, 200, {
+    success: true,
+    message: 'Logout successful'
+  });
+});
+
+// Load admin routes
+const adminRoutes = require('./routes/admin');
+
+// Mount admin routes with authentication
+app.use('/api/admin', authenticateToken, adminRoutes);
 
 // Database connection pool for better performance
 let pool;
@@ -610,7 +740,11 @@ async function getConversationHistory(sessionId, limit = 3) {
 // Validation schemas
 const chatRequestSchema = Joi.object({
   message: Joi.string().required().min(1).max(2000),
-  sessionId: Joi.string().optional().default(() => uuidv4())
+  sessionId: Joi.string().optional().default(() => uuidv4()),
+  userContext: Joi.object({
+    name: Joi.string().optional(),
+    email: Joi.string().optional().email(),
+  }).optional()
 });
 
 const settingsUpdateSchema = Joi.object({
@@ -785,7 +919,7 @@ app.post('/api/chat', async (req, res) => {
       return sendJsonResponse(res, 400, { success: false, error: error.details[0].message });
     }
 
-    const { message, sessionId } = value;
+    const { message, sessionId, userContext } = value;
     const settings = await getSettings();
     const enableSchema = settings.enable_schema_info === 'true';
     

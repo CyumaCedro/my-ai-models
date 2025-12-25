@@ -11,6 +11,11 @@ const http = require('http');
 const https = require('https');
 const { URL } = require('url');
 
+// Import RAG components
+const VectorDatabase = require('./database/VectorDatabase');
+const RAGEngine = require('./database/RAGEngine');
+const adminRoutes = require('./routes/admin');
+
 const app = express();
 const PORT = process.env.PORT || 8000;
 
@@ -86,6 +91,9 @@ function sendJsonResponse(res, statusCode, data) {
 
 // Database connection pool for better performance
 let pool;
+let vectorDB;
+let ragEngine;
+
 async function initDatabase() {
   try {
     pool = mysql.createPool({
@@ -100,6 +108,13 @@ async function initDatabase() {
       queueLimit: 0
     });
     console.log('Connected to MySQL database pool');
+
+    // Initialize RAG components
+    vectorDB = new VectorDatabase();
+    await vectorDB.initialize();
+    
+    ragEngine = new RAGEngine(vectorDB);
+    console.log('RAG system initialized');
   } catch (error) {
     console.error('Database connection failed:', error);
     process.exit(1);
@@ -679,7 +694,11 @@ async function getConversationHistory(sessionId, limit = 3) {
 // Validation schemas
 const chatRequestSchema = Joi.object({
   message: Joi.string().required().min(1).max(2000),
-  sessionId: Joi.string().optional().default(() => uuidv4())
+  sessionId: Joi.string().optional().default(() => uuidv4()),
+  userContext: Joi.object({
+    name: Joi.string().optional(),
+    email: Joi.string().optional().email(),
+  }).optional()
 });
 
 const settingsUpdateSchema = Joi.object({
@@ -807,12 +826,12 @@ app.get('/api/tables', async (req, res) => {
 
 app.post('/api/chat', async (req, res) => {
   try {
-    const { error, value } = chatRequestSchema.validate(req.body);
+const { error, value } = chatRequestSchema.validate(req.body);
     if (error) {
       return sendJsonResponse(res, 400, { success: false, error: error.details[0].message });
     }
 
-const { message, sessionId } = value;
+const { message, sessionId, userContext } = value;
     const settings = await getSettings();
     const enableSchema = settings.enable_schema_info === 'true';
     
@@ -859,8 +878,26 @@ const { message, sessionId } = value;
       context = await getTableSchema();
     }
     
-    // Get conversation history for better context
+// Get conversation history for better context
     const conversationHistory = await getConversationHistory(sessionId);
+    
+    // Use RAG to enhance the query with user context
+    let enhancedQuery = message;
+    let ragContext = '';
+    let ragSources = [];
+    
+    if (ragEngine && userContext) {
+      try {
+        const ragResult = await ragEngine.enhanceQuery(message, userContext);
+        enhancedQuery = ragResult.enhancedQuery;
+        ragContext = ragResult.context;
+        ragSources = ragResult.sources;
+        console.log('RAG enhancement applied');
+      } catch (ragError) {
+        console.error('RAG enhancement failed:', ragError);
+        // Continue with original query if RAG fails
+      }
+    }
     
     // Determine if this is a data request
     const dataKeywords = [
@@ -889,8 +926,8 @@ const { message, sessionId } = value;
       settings.enabled_tables.split(',').map(t => t.trim()) : [];
     const schemaMap = await buildSchemaMap(enabledTables);
     
-    try {
-      aiResponse = await callOllama(message, context, conversationHistory);
+try {
+      aiResponse = await callOllama(enhancedQuery, context, conversationHistory);
     } catch (ollamaError) {
       console.error('Ollama error:', ollamaError);
       const fallback = "I'm having trouble processing your request right now. Please try again in a moment.";
@@ -935,9 +972,31 @@ const { message, sessionId } = value;
               const tableName = match.split(/\s+/).pop().replace(/`/g, '').toLowerCase();
               if (!tablesAccessed.includes(tableName)) {
                 tablesAccessed.push(tableName);
-              }
-            });
-          }
+  }
+  });
+}
+
+function sendJsonResponse(res, statusCode, data) {
+  try {
+    // Validate that data can be stringified
+    const jsonString = JSON.stringify(data);
+    
+    // Set proper headers
+    res.setHeader('Content-Type', 'application/json; charset=utf-8');
+    res.status(statusCode);
+    res.send(jsonString);
+  } catch (error) {
+    console.error('JSON Response Error:', error);
+    
+    // Always try to return a valid response, even on error
+    const fallbackResponse = "I'm having trouble processing your request right now. Please try again.";
+    
+    res.status(statusCode).json({
+      success: false,
+      error: fallbackResponse
+    });
+  }
+}
           
           // Summarize results with data
           if (queryResults && queryResults.length > 0) {
@@ -1034,27 +1093,26 @@ const { message, sessionId } = value;
       aiResponse = "I'm here to help! Could you please rephrase your question or try asking about something specific?";
     }
     
-// Save to chat history (simplified to avoid database errors during general questions)
-    if (message.toLowerCase().includes('chemistry') || message.toLowerCase().includes('maths')) {
-      // For general questions, skip database save to avoid crashes
-      console.log('Skipping database save for general question');
-    } else {
-      try {
-        await pool.execute(
-          `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
-             VALUES (?, ?, ?, ?)`,
-          [sessionId, message, fallbackResponse, 'error']
-        );
-      } catch (error) {
-        console.error('Chat history save error:', error);
-      }
+    // Save to chat history
+    try {
+      await pool.execute(
+        `INSERT INTO chat_history (session_id, user_message, ai_response, tables_accessed) 
+           VALUES (?, ?, ?, ?)`,
+        [sessionId, message, aiResponse, tablesAccessed.join(',')]
+      );
+    } catch (error) {
+      console.error('Chat history save error:', error);
     }
     
     sendJsonResponse(res, 200, {
       success: true,
-      response: fallbackResponse,
-      sessionId
+      response: aiResponse,
+      sessionId,
+      queryResults,
+      tablesAccessed
     });
+  }
+});
   }
     }
     
@@ -1097,6 +1155,13 @@ app.get('/api/history/:sessionId', async (req, res) => {
     sendJsonResponse(res, 500, { success: false, error: error.message });
   }
 });
+
+// Admin routes
+app.use('/api/admin', (req, res, next) => {
+  req.vectorDB = vectorDB;
+  req.ragEngine = ragEngine;
+  next();
+}, adminRoutes);
 
 // Graceful shutdown handling
 process.on('SIGTERM', async () => {
