@@ -333,7 +333,7 @@ useEffect(() => {
     }, 2000);
     
     return () => clearTimeout(timer);
-  }, []);
+  }, [tables.length]);
 
   const loadSettings = async () => {
     try {
@@ -585,9 +585,7 @@ const clearChat = () => {
     setShowUserSetup(false);
   };
 
-  const updateUserContext = () => {
-    localStorage.setItem('userContext', JSON.stringify(userContext));
-  };
+
 
   // Check if user is admin (simple password check - in production use proper auth)
   const checkAdminAccess = () => {
