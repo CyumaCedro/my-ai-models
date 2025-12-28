@@ -385,6 +385,14 @@ import axios from 'axios';
                         )}
                       </div>
                     </div>
+                  </div>
+                </div>
+              </div>
+              </div>
+          )}
+
+          {/* Analytics Tab */}
+                    </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Category
