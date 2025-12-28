@@ -108,6 +108,8 @@ services:
       until ollama list >/dev/null 2>&1; do echo 'Still waiting...'; sleep 2; done;
       echo 'Pulling optimized model...';
       ollama pull deepseek-coder-v2:16b-lite-instruct-q4_K_M;
+      echo 'Also pulling general chat model...';
+      ollama pull llama3.2:3b;
       echo 'Preloading model into GPU memory...';
       curl -X POST http://ollama:11434/api/generate -d '{\"model\":\"deepseek-coder-v2:16b-lite-instruct-q4_K_M\",\"prompt\":\"test\",\"stream\":false}' || true;
       echo 'Model ready!';

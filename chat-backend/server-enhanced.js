@@ -405,7 +405,7 @@ async function executeSafeQuery(query) {
 async function callOllama(prompt, context = '', conversationHistory = []) {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
-  const model = settings.ollama_model || 'deepseek-coder-v2';
+  const model = settings.ollama_model || 'llama3.2:3b';
   
   const systemPrompt = `You are a helpful assistant that provides intelligent insights from data. Follow these rules strictly:
 
@@ -514,7 +514,7 @@ function stripTechnicalContent(text) {
 async function summarizeWithData(question, dataJson, context = '') {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
-  const model = settings.ollama_model || 'deepseek-coder-v2';
+  const model = settings.ollama_model || 'llama3.2:3b';
   
   const systemPrompt = `You are a helpful analyst providing insights from data. Focus on what the data reveals, not technical details.
 
@@ -592,7 +592,7 @@ Please analyze this data and provide a clear, helpful answer to the question.`;
 async function callGeneralAnswer(prompt) {
   const settings = await getSettings();
   const ollamaUrl = settings.ollama_url || 'http://192.168.1.70:11434';
-  const model = settings.ollama_model || 'deepseek-coder-v2';
+  const model = settings.ollama_model || 'llama3.2:3b';
   
   const systemPrompt = `You are a helpful assistant. Answer questions clearly and concisely.
 Keep responses natural and conversational. No technical jargon unless specifically asked.`;
