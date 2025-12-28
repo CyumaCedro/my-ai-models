@@ -2,14 +2,53 @@ import React, { useState, useEffect } from 'react';
 import { X, Database, Settings, FileText, Users, BarChart3, Upload, Trash2, Edit, Save, Plus } from 'lucide-react';
 import axios from 'axios';
 
-const AdminInterface = ({ isOpen, onClose }) => {
+  const AdminInterface = ({ isOpen, onClose }) => {
   const [activeTab, setActiveTab] = useState('database');
   const [settings, setSettings] = useState({});
   const [tables, setTables] = useState([]);
   const [chatHistory, setChatHistory] = useState([]);
   const [sqlQuery, setSqlQuery] = useState('');
-  const [queryResults, setQueryResults] = useState([]);
   const [loading, setLoading] = useState(false);
+  // Add state for document upload
+  const [uploadStatus, setUploadStatus] = useState('');
+  const [selectedFile, setSelectedFile] = useState(null);
+
+  // Handle document upload
+  const handleFileUpload = async () => {
+    if (!selectedFile) {
+      alert('Please select a file first');
+      return;
+    }
+
+    setUploadStatus('uploading');
+    
+    try {
+      const formData = new FormData();
+      formData.append('file', selectedFile);
+      formData.append('title', selectedFile.name.replace(/\.[^/.]+$/, ''));
+      formData.append('category', 'general');
+      formData.append('autoProcess', 'true');
+
+      const response = await axios.post('/api/admin/upload-document', formData, {
+        headers: {
+          'Content-Type': 'multipart/form-data',
+        }
+      });
+
+      if (response.data.success) {
+        setUploadStatus('success');
+        setSelectedFile(null);
+        setTimeout(() => setUploadStatus(''), 3000);
+      } else {
+        setUploadStatus('error');
+        setTimeout(() => setUploadStatus(''), 3000);
+      }
+    } catch (error) {
+      console.error('Upload error:', error);
+      setUploadStatus('error');
+      setTimeout(() => setUploadStatus(''), 3000);
+    }
+  };
 
   // Load initial data
   useEffect(() => {
@@ -302,17 +341,49 @@ const AdminInterface = ({ isOpen, onClose }) => {
                       <label className="block text-sm font-medium text-gray-700 mb-2">
                         Select File
                       </label>
-                      <input
-                        type="file"
-                        accept=".pdf,.csv,.xlsx,.xls,.txt,.md,.docx"
-                        className="w-full p-2 border rounded-lg"
-                        onChange={(e) => {
-                          const file = e.target.files[0];
-                          if (file) {
-                            alert(`Selected: ${file.name}\n\nNote: Upload functionality requires admin authentication. For now, use chat to process documents.`);
-                          }
-                        }}
-                      />
+                        <div className="space-y-4">
+                          <div className="flex items-center space-x-4">
+                            <input
+                              type="file"
+                              accept=".pdf,.csv,.xlsx,.xls,.txt,.md,.docx"
+                              className="w-full p-2 border rounded-lg"
+                              onChange={(e) => {
+                                const file = e.target.files[0];
+                                setSelectedFile(file);
+                              }}
+                              onDrop={(e) => {
+                                e.preventDefault();
+                                const file = e.dataTransfer.files[0];
+                                setSelectedFile(file);
+                              }}
+                              onDragOver={(e) => e.preventDefault()}
+                            />
+                            <button
+                              onClick={handleFileUpload}
+                              disabled={!selectedFile || uploadStatus === 'uploading'}
+                              className="btn-primary flex items-center space-x-2"
+                            >
+                              <Upload className="w-4 h-4" />
+                              <span>{uploadStatus === 'uploading' ? 'Uploading...' : 'Upload Document'}</span>
+                            </button>
+                          </div>
+                        </div>
+                        {selectedFile && (
+                          <div className="mt-2 p-3 bg-gray-100 rounded-lg">
+                            <p className="text-sm text-gray-700">
+                              <strong>Selected:</strong> {selectedFile.name}
+                            </p>
+                          </div>
+                        )}
+                        {uploadStatus && (
+                          <div className="mt-2 p-3 rounded-lg" style={{
+                            backgroundColor: uploadStatus === 'success' ? '#d1fae5' : uploadStatus === 'error' ? '#fee2e2' : '#fef3c7',
+                            color: uploadStatus === 'success' ? '#065f46' : uploadStatus === 'error' ? '#991b1b' : '#1f2937'
+                          }}>
+                            <p className="text-sm font-medium">{uploadStatus}</p>
+                          </div>
+                        )}
+                      </div>
                     </div>
                     <div>
                       <label className="block text-sm font-medium text-gray-700 mb-2">
