@@ -6,7 +6,7 @@ import rehypeKatex from 'rehype-katex';
 import { Prism as SyntaxHighlighter } from 'react-syntax-highlighter';
 import { vscDarkPlus } from 'react-syntax-highlighter/dist/esm/styles/prism';
 import { format } from 'date-fns';
-// import AdminInterface from './AdminInterface';
+// import AdminInterface from './components/AdminInterface.jsx';
 import 'katex/dist/katex.min.css';
 
 function App() {
@@ -1130,7 +1130,7 @@ return (
         </div>
       )}
 
-      {/* Admin Interface - Temporarily disabled */}
+      {/* Admin Interface - Disabled due to import issues */}
       {/* <AdminInterface 
         isOpen={showAdmin} 
         onClose={() => setShowAdmin(false)} 
